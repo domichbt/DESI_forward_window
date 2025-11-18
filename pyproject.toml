@@ -1,0 +1,49 @@
+[project]
+name = "desiforwardwindow"
+version = "0.0.1"
+dependencies = [
+    "jax",
+    "lsstypes @ git+https://github.com/adematti/lsstypes",
+    "jaxpower @ git+https://github.com/adematti/jax-power",
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 160
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "D",
+    "E",
+    "I",
+    "B",
+    "F",
+    "W",
+    "N",
+    "A",
+    "G",
+    "C4",
+    "FLY",
+    "NPY",
+    "UP",
+    "RUF",
+    "TC",
+]
+ignore = ["E501"] #, "E402"]
+fixable = ["I001"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.pep8-naming]
+ignore-names = ["*DR1*", "*AIC*", "*RIC*", "*IC*"]
