@@ -20,8 +20,8 @@ from .utils import bincount_2d
 
 
 def _prepare_AIC(
-    data: ParticleField,
-    randoms: ParticleField,
+    data_weights: ParticleField,
+    randoms_weights: ParticleField,
     # AIC specific data
     template_values: jnp.ndarray,
     mask_is_data: jnp.ndarray,
@@ -61,17 +61,17 @@ def _prepare_AIC(
     # Binned weights and jacobian are used in the solution
     randoms_weights_binned = bincount_2d(
         templates_digitized[mask_is_randoms & mask_extremes].T,
-        weights=randoms.weights[mask_extremes_in_randoms],
+        weights=randoms_weights[mask_extremes_in_randoms],
         length=n_bins + 1,
     )[:, 1:, ...]
 
     jacobian = bincount_2d(
         templates_digitized[mask_is_randoms & mask_extremes].T,
         weights=(
-            randoms.weights[mask_extremes_in_randoms]
+            randoms_weights[mask_extremes_in_randoms]
             * jnp.stack(
                 [
-                    jnp.ones_like(randoms.weights[mask_extremes_in_randoms]),
+                    jnp.ones_like(randoms_weights[mask_extremes_in_randoms]),
                     *templates_normalized[mask_is_randoms & mask_extremes, :].T,
                 ]
             )
@@ -80,7 +80,7 @@ def _prepare_AIC(
     )[:, 1:, ...]
 
     normalization = (
-        data[mask_extremes_in_data].sum() / randoms[mask_extremes_in_randoms].sum()
+        data_weights[mask_extremes_in_data].sum() / randoms_weights[mask_extremes_in_randoms].sum()
     )  # without extremes, without the actualized data weights: approximate
 
     # Ravel everything to take advantage of matrix operations
@@ -92,15 +92,14 @@ def _prepare_AIC(
     constant = normalization * factor.dot(randoms_weights_binned)
 
     # pre-masked templates
-    data_templates_digitized_no_extremes = templates_digitized[mask_is_data * mask_extremes]
-    data_templates_normalized_with_extremes = templates_normalized[mask_is_data]
+    data_templates_digitized = templates_digitized[mask_is_data]
+    data_templates_normalized = templates_normalized[mask_is_data]
 
-    # for refactor later: only need [data_weights, data_templates_digitized_no_extremes, mask_extremes_in_data, n_bins, data_templates_normalized_with_extremes, factor, constant]
     return {
-        "data_templates_digitized_no_extremes": data_templates_digitized_no_extremes,
+        "data_templates_digitized": data_templates_digitized,
         "mask_extremes_in_data": mask_extremes_in_data,
         "n_bins": n_bins,
-        "data_templates_normalized_with_extremes": data_templates_normalized_with_extremes,
+        "data_templates_normalized": data_templates_normalized,
         "factor": factor,
         "constant": constant,
     }
@@ -108,25 +107,25 @@ def _prepare_AIC(
 
 def _get_AIC_weights(
     data_weights: jnp.ndarray,
-    data_templates_digitized_no_extremes: jnp.ndarray,
+    data_templates_digitized: jnp.ndarray,
     mask_extremes_in_data: jnp.ndarray,
     n_bins: int,
-    data_templates_normalized_with_extremes: jnp.ndarray,
+    data_templates_normalized: jnp.ndarray,
     factor: jnp.ndarray,
     constant: jnp.ndarray,
 ):
     data_weights_binned = bincount_2d(
-        data_templates_digitized_no_extremes.T,
-        weights=data_weights[mask_extremes_in_data],
+        data_templates_digitized.T,
+        weights=data_weights * mask_extremes_in_data,
         length=n_bins + 1,
     )[:, 1:, ...]
     p_opt = factor.dot(data_weights_binned.reshape((-1,))) - constant
-    return 1 / (1 + p_opt[0] + data_templates_normalized_with_extremes.dot(p_opt[1:]))
+    return 1 / (1 + p_opt[0] + data_templates_normalized.dot(p_opt[1:]))
 
 
 def get_AIC_foward_model(
-    data: ParticleField,
-    randoms: ParticleField,
+    data_weights: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
     # AIC specific data
     template_values: jnp.ndarray,
     mask_is_data: jnp.ndarray,
@@ -140,10 +139,10 @@ def get_AIC_foward_model(
 
     Parameters
     ----------
-    data : ParticleField
-        Data particles positions and weights.
-    randoms : ParticleField
-        Randoms particles positions and weights.
+    data_weights : jnp.ndarray
+        Data weights.
+    randoms_weights : jnp.ndarray
+        Randoms weights.
     template_values : jnp.ndarray
         Values of the templates for the data and the randoms.
     mask_is_data : jnp.ndarray
@@ -161,8 +160,8 @@ def get_AIC_foward_model(
         Jitted, differentiable ``get_AIC_weights`` function that takes in ``data.weights`` and returns AIC (photometric) weights.
     """
     fixed_args = _prepare_AIC(
-        data=data,
-        randoms=randoms,
+        data_weights=data_weights,
+        randoms_weights=randoms_weights,
         # AIC specific data
         template_values=template_values,
         mask_is_data=mask_is_data,
@@ -176,24 +175,25 @@ def get_AIC_foward_model(
 
 
 def _prepare_RIC(
-    data: ParticleField,
-    randoms: ParticleField,
+    data_positions: jnp.ndarray,
+    randoms_positions: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
+    boxcenter: jnp.ndarray,
+    boxsize: jnp.ndarray,
     # RIC specific parameters
     n_bins_RIC: int,
 ):
-    mattrs = randoms.attrs
-
-    dmin = jnp.min(mattrs.boxcenter - mattrs.boxsize / 2.0)
-    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((mattrs.boxcenter + mattrs.boxsize / 2.0) ** 2))
+    dmin = jnp.min(boxcenter - boxsize / 2.0)
+    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
     distance_edges = jnp.linspace(dmin, dmax, n_bins_RIC)
-    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)  # could be made faster with jnp.floor
-    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms.weights, length=n_bins_RIC + 1)[1:]
+    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins_RIC + 1)[1:]
 
-    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
+    data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)
 
-    randoms_sum = randoms.sum()
+    randoms_sum = randoms_weights.sum()
 
     return {
         "data_distances_digitized": data_distances_digitized,
@@ -223,8 +223,11 @@ def _get_RIC_weights(
 
 
 def get_RIC_forward_model(
-    data: ParticleField,
-    randoms: ParticleField,
+    data_positions: jnp.ndarray,
+    randoms_positions: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
+    boxcenter: jnp.ndarray,
+    boxsize: jnp.ndarray,
     # RIC specific parameters
     n_bins_RIC: int,
 ) -> Callable:
@@ -233,19 +236,32 @@ def get_RIC_forward_model(
 
     Parameters
     ----------
-    data : ParticleField
-        _description_
-    randoms : ParticleField
-        _description_
+    data_positions : jnp.ndarray
+        2D array for data positions.
+    randoms_positions : jnp.ndarray
+        2D array for randoms positions.
+    randoms_weights : jnp.ndarray
+        1D array of the random's weights.
+    boxcenter : jnp.ndarray
+        Coordinates of the center of the box used for the power spectrum computation.
+    boxsize : jnp.ndarray
+        Sizes of the sides of the box used for the power spectrum computation.
     n_bins_RIC : int
-        _description_
+        Number of distance bins to used.
 
     Returns
     -------
     Callable
         Jitted, differentiable ``get_RIC_weights`` function that takes in ``data.weights`` and returns RIC weights.
     """
-    fixed_args = _prepare_RIC(data=data, randoms=randoms, n_bins_RIC=n_bins_RIC)
+    fixed_args = _prepare_RIC(
+        data_positions=data_positions,
+        randoms_positions=randoms_positions,
+        randoms_weights=randoms_weights,
+        boxcenter=boxcenter,
+        boxsize=boxsize,
+        n_bins_RIC=n_bins_RIC,
+    )
 
     get_RIC_weights = jax.jit(partial(_get_RIC_weights, **fixed_args))  # Can fix everything but data_weights
     return get_RIC_weights
