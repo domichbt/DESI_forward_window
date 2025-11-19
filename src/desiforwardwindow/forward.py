@@ -265,6 +265,7 @@ def mock_survey(
     binner: BinMesh2SpectrumPoles,
     randoms_mesh: RealMeshField,
     randoms_shotnoise: float,
+    fkp_norm: jnp.ndarray,
 ) -> Mesh2SpectrumPoles:
     """
     Apply observation forward modeling to a theoretical power spectrum.
@@ -291,6 +292,8 @@ def mock_survey(
         Pre-painted randoms catalog.
     randoms_shotnoise : float
         Sum of the squared weights of the randoms.
+    fkp_norm : jnp.ndarray
+        Pre-computed power spectrum norm for the FKP field, disregarding any changes in weights.
 
     Returns
     -------
@@ -320,11 +323,10 @@ def mock_survey(
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()
     fkp_mesh = data_mesh - alpha * randoms_mesh
-    norm = alpha * compute_normalization(data_mesh, randoms_mesh)
     shotnoise = jnp.sum(data.weights**2) + alpha**2 * randoms_shotnoise
     pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
     return pk.clone(
-        norm=[norm] * len(binner.ells),
+        norm=fkp_norm,
         num_shotnoise=[shotnoise * (ell == 0) * jnp.ones_like(binner.edges[..., 0]) for ell in binner.ells],
     )
 
@@ -343,6 +345,7 @@ def mock_survey_diff(
     binner: BinMesh2SpectrumPoles,
     randoms_mesh: RealMeshField,
     randoms_shotnoise: float,
+    fkp_norm: jnp.ndarray,
 ) -> Mesh2SpectrumPoles:
     """
     Apply observation forward modeling to a theoretical power spectrum and return the difference of the power spectrum with a geometry-only observation (no integral constraints).
@@ -371,6 +374,8 @@ def mock_survey_diff(
         Pre-painted randoms catalog.
     randoms_shotnoise : float
         Sum of the squared weights of the randoms.
+    fkp_norm : jnp.ndarray
+        Pre-computed power spectrum norm for the FKP field, disregarding any changes in weights.
 
     Returns
     -------
@@ -408,11 +413,10 @@ def mock_survey_diff(
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()
     fkp_mesh = data_mesh - alpha * randoms_mesh
-    norm = alpha * compute_normalization(data_mesh, randoms_mesh)
     shotnoise = jnp.sum(data.weights**2) + alpha**2 * randoms_shotnoise
     pk_IC = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
     pk_IC = pk_IC.clone(
-        norm=[norm] * len(binner.ells),
+        norm=fkp_norm,
         num_shotnoise=[shotnoise * (ell == 0) * jnp.ones_like(binner.edges[..., 0]) for ell in binner.ells],
     )
     # Return the difference of the spectra
