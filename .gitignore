@@ -3,6 +3,7 @@ test_data/*
 *brouillon*
 .vscode
 .DS_Store
+*.h5
 
 # the following from https://github.com/github/gitignore/blob/main/Python.gitignore
 
