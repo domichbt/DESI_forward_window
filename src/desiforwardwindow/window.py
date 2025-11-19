@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxpower import BinMesh2SpectrumPoles, RealMeshField, compute_mesh2_spectrum_window, compute_normalization
 from lsstypes import Mesh2SpectrumPoles, WindowMatrix
+from tqdm import tqdm
 
 
 def get_window_geometry(
@@ -63,6 +64,7 @@ def get_window_spikes(
     seeds: list[jnp.ndarray] | None = None,
     batch_size: int = 1,
     mock_survey_kw: dict | None = None,
+    unhashable: list[str] | None = None,
 ):
     """
     Estimate the response (window matrix component) of a given observation forward modelling ``mock_survey`` for some fiducial theory input ``theory``.
@@ -91,18 +93,23 @@ def get_window_spikes(
         The average window matrix over ``nreal`` realizations and the individual realizations.
     """
     mock_survey_kw = mock_survey_kw or {}
+    unhashable = unhashable or []
+
+    static_argnames = ["mock_survey", *(mock_survey_kw.keys() - set(unhashable))]
+    print(static_argnames)
 
     # Initialize a list of windows to fill later
     windows = [None for i in range(nreal)]
 
     # Get some empty theory and observable to use their shapes when creating the window matrix
-    observable = mock_survey(theory, **mock_survey_kw)
+    observable = mock_survey(theory, seed=jax.random.key(42), **mock_survey_kw)
     observable = observable.clone(value=0.0 * observable.value())
     theory_zeros = jnp.zeros_like(theory.value())
 
     # JIT the function retrieving the window component
     get_window = jax.jit(
         partial(get_window_component, fiducial_theory=theory),
+        static_argnames=static_argnames,
     )
 
     if seeds is None:
@@ -110,11 +117,11 @@ def get_window_spikes(
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
-    for isplit in range(nsplits):
+    for isplit in tqdm(range(nsplits)):
         islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
         spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
         for imock in range(nreal):
-            spectrum = get_window(injected_theory=spikes, mock_survey=mock_survey, mock_survey_kw=mock_survey_kw | {"seed": seeds[imock]}).T
+            spectrum = get_window(injected_theory=spikes, mock_survey=mock_survey, seed=seeds[imock], **mock_survey_kw).T
             if windows[imock] is None:
                 windows[imock] = np.zeros((spectrum.shape[0], theory.size))
             windows[imock][..., slice(*islice)] = spectrum
@@ -123,7 +130,7 @@ def get_window_spikes(
     return window, windows
 
 
-def get_window_component(injected_theory, fiducial_theory, mock_survey, mock_survey_kw):
+def get_window_component(injected_theory, fiducial_theory, mock_survey, **mock_survey_kw):
     """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
 
     # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles
@@ -135,6 +142,6 @@ def get_window_component(injected_theory, fiducial_theory, mock_survey, mock_sur
     # Get the Jacobian of this, differentated wrt argument `input_value`, evaluated in fiducial_value, dot product with s
     def derivative(s):
         # fiducial_value -> global
-        return jax.jvp(get_response, primals=(fiducial_theory,), tangents=(s,))[1]
+        return jax.jvp(get_response, primals=(fiducial_theory.value(),), tangents=(s,))[1]
 
     return jax.vmap(derivative)(injected_theory)
