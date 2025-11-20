@@ -439,3 +439,51 @@ def mock_survey_diff(
     # Return the difference of the spectra
     spectra = [pk_IC, pk_geo]
     return tree_map(lambda poles: poles[0].clone(value=poles[0].value() - poles[1].value()), spectra)
+
+
+def mock_survey_mesh(
+    # Gaussian mock generation
+    theory: ObservableTree,
+    seed: jnp.ndarray,
+    los: Literal["local", "x", "y", "z"],
+    unitary_amplitude: bool,
+    # Final P(k) estimation
+    binner: BinMesh2SpectrumPoles,
+    # selection
+    selection: RealMeshField,
+    ric: bool,
+) -> Mesh2SpectrumPoles:
+    """
+    Apply mesh-based geometry forward modeling to a theoretical power spectrum.
+
+    Returns
+    -------
+    Mesh2SpectrumPoles
+        Realization of an observation of the theory power spectrum.
+    """
+    # Generate a gaussian mesh mock with exact required theory P(k)
+    mattrs = selection.attrs
+    mesh = (
+        generate_anisotropic_gaussian_mesh(
+            mattrs,
+            poles=theory,
+            seed=seed,
+            los=los,
+            unitary_amplitude=unitary_amplitude,
+        )
+        * selection
+    )
+    if ric:
+        dmin = jnp.min(mattrs.boxcenter - mattrs.boxsize / 2.0)
+        dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((mattrs.boxcenter + mattrs.boxsize / 2.0) ** 2))
+        edges = jnp.linspace(dmin, dmax, 1000)
+        rnorm = jnp.sqrt(sum(xx**2 for xx in mattrs.rcoords(sparse=True)))
+        ibin = jnp.digitize(rnorm, edges, right=False)
+        bw = jnp.bincount(ibin.ravel(), weights=mesh.ravel(), length=len(edges) + 1)
+        b = jnp.bincount(ibin.ravel(), weights=selection.ravel(), length=len(edges) + 1)
+        # Integral constraint
+        bw = bw / jnp.where(b == 0.0, 1.0, b)  # (integral of W * delta) / (integral of W)
+        mesh -= bw[ibin].reshape(selection.shape) * selection
+    norm = compute_normalization(selection, selection, bin=binner)
+    pk = compute_mesh2_spectrum(mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
+    return pk.clone(norm=norm)
