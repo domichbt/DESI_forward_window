@@ -339,7 +339,7 @@ def mock_survey(
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()
     fkp_mesh = data_mesh - alpha * randoms_mesh
-    shotnoise = jnp.sum(data.weights**2) + alpha**2 * randoms_shotnoise
+    shotnoise = jnp.sum(data_field.weights**2) + alpha**2 * randoms_shotnoise
     pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
     return pk.clone(
         norm=fkp_norm,
