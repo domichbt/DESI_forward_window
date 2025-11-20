@@ -326,7 +326,8 @@ def mock_survey(
         unitary_amplitude=unitary_amplitude,
     )
     # Paint it on the portion of randoms designated as "data" -> data catalog w/ geometry
-    data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True) + 1))
+    data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True, exchange=True) + 1))
+    del mesh
     # Apply RIC if necessary
     if get_RIC_weights is not None:
         RIC_weights = get_RIC_weights(data_field.weights)
