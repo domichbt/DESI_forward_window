@@ -267,6 +267,86 @@ def get_RIC_forward_model(
     return get_RIC_weights
 
 
+def _prepare_NAM(
+    data_positions: jnp.ndarray,
+    randoms_positions: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
+    # RIC specific parameters
+    nside: int,
+):
+    import healpy as hp
+
+    data_hpx = hp.vec2pix(*[nside, *data_positions.T])
+    randoms_hpx = hp.vec2pix(*[nside, *randoms_positions.T])
+
+    randoms_hpx_binned = jnp.bincount(randoms_hpx, weights=randoms_weights, length=12 * nside**2)
+
+    randoms_sum = randoms_weights.sum()  # is that not just randoms_hpx_binned.sum() ?
+
+    return {
+        "data_hpx": data_hpx,
+        "nside": nside,
+        "randoms_hpx_binned": randoms_hpx_binned,
+        "randoms_sum": randoms_sum,
+    }
+
+
+def _get_NAM_weights(
+    data_weights,
+    data_hpx,
+    nside,
+    randoms_hpx_binned,
+    randoms_sum,
+):
+    data_hpx_binned = jnp.bincount(data_hpx, weights=data_weights, length=12 * nside**2)
+    return (
+        data_weights.sum()
+        / randoms_sum
+        * jnp.where(
+            data_hpx_binned == 0,
+            1.0,
+            (randoms_hpx_binned / data_hpx_binned),
+        )[data_hpx]
+    )
+
+
+def get_NAM_forward_model(
+    data_positions: jnp.ndarray,
+    randoms_positions: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
+    # NAM specific parameters
+    nside: int,
+) -> Callable:
+    """
+    Build a jittable, differentiable ``get_NAM_weights`` function that takes in `data.weights` and returns RIC (forward model) weights.
+
+    Parameters
+    ----------
+    data_positions : jnp.ndarray
+        2D array for data positions.
+    randoms_positions : jnp.ndarray
+        2D array for randoms positions.
+    randoms_weights : jnp.ndarray
+        1D array of the random's weights.
+    nside : int
+        Resolution for the pixel binning (power of two).
+
+    Returns
+    -------
+    Callable
+        Jitted, differentiable ``get_NAM_weights`` function that takes in ``data.weights`` and returns NAM weights.
+    """
+    fixed_args = _prepare_NAM(
+        data_positions=data_positions,
+        randoms_positions=randoms_positions,
+        randoms_weights=randoms_weights,
+        nside=nside,
+    )
+
+    get_NAM_weights = jax.jit(partial(_get_NAM_weights, **fixed_args))  # Can fix everything but data_weights
+    return get_NAM_weights
+
+
 def mock_survey(
     # Gaussian mock generation
     theory: ObservableTree,
