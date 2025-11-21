@@ -98,7 +98,6 @@ def _prepare_AIC(
     return {
         "data_templates_digitized": data_templates_digitized,
         "mask_extremes_in_data": mask_extremes_d,
-        "n_bins": n_bins,
         "data_templates_normalized": data_templates_normalized,
         "factor": factor,
         "constant": constant,
@@ -170,7 +169,7 @@ def get_AIC_foward_model(
         bin_margin=bin_margin,
         n_bins=n_bins,
     )
-    get_AIC_weights = jax.jit(partial(_get_AIC_weights, **fixed_args))  # Can fix everything but data_weights
+    get_AIC_weights = jax.jit(partial(_get_AIC_weights, n_bins=n_bins, **fixed_args))  # Can fix everything but data_weights
     return get_AIC_weights
 
 
@@ -197,7 +196,6 @@ def _prepare_RIC(
 
     return {
         "data_distances_digitized": data_distances_digitized,
-        "n_bins_RIC": n_bins_RIC,
         "randoms_distances_binned": randoms_distances_binned,
         "randoms_sum": randoms_sum,
     }
@@ -263,7 +261,7 @@ def get_RIC_forward_model(
         n_bins_RIC=n_bins_RIC,
     )
 
-    get_RIC_weights = jax.jit(partial(_get_RIC_weights, **fixed_args))  # Can fix everything but data_weights
+    get_RIC_weights = jax.jit(partial(_get_RIC_weights, n_bins_RIC=n_bins_RIC, **fixed_args))  # Can fix everything but data_weights
     return get_RIC_weights
 
 
