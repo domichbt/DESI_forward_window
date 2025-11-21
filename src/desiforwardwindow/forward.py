@@ -355,6 +355,7 @@ def mock_survey(
     data: ParticleField,
     get_RIC_weights: Callable | None,
     get_AIC_weights: Callable | None,
+    get_NAM_weights: Callable | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     randoms_mesh: RealMeshField,
@@ -380,6 +381,8 @@ def mock_survey(
         Optional function taking in ``data.weights``-like arguments and returning weights to apply the radial integral constraint. See :py:func:`get_RIC_forward_model`.
     get_AIC_weights : Callable | None
         Optional function taking in ``data.weights``-like arguments and returning weights to apply the angular integral constraint. See :py:func:`get_AIC_forward_model`.
+    get_NAM_weights : Callable | None
+        Optional function taking in ``data.weights``-like arguments and returning weights to apply the NAM procedure. See :py:func:`get_NAM_forward_model`.
     binner : BinMesh2SpectrumPoles
         Binning operator to compute the output power spectrum.
     randoms_mesh : RealMeshField
@@ -414,6 +417,10 @@ def mock_survey(
     if get_AIC_weights is not None:
         AIC_weights = get_AIC_weights(data_field.weights)
         data_field = data_field.clone(weights=data_field.weights * AIC_weights)
+    # Apply AIC if necessary
+    if get_NAM_weights is not None:
+        NAM_weights = get_NAM_weights(data_field.weights)
+        data_field = data_field.clone(weights=data_field.weights * NAM_weights)
     # Paint to mesh for P(k) computation and build FKP mesh
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()
