@@ -529,6 +529,7 @@ def mock_survey_mesh(
     unitary_amplitude: bool,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
+    norm: jnp.array,
     # selection
     selection: RealMeshField,
     ric: bool,
@@ -564,6 +565,5 @@ def mock_survey_mesh(
         # Integral constraint
         bw = bw / jnp.where(b == 0.0, 1.0, b)  # (integral of W * delta) / (integral of W)
         mesh -= bw[ibin].reshape(selection.shape) * selection
-    norm = compute_normalization(selection, selection, bin=binner)
     pk = compute_mesh2_spectrum(mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
     return pk.clone(norm=norm)

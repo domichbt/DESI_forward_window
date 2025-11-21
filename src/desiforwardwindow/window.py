@@ -17,6 +17,7 @@ def get_window_geometry(
     theory_edges: np.ndarray,
     theory_ells: tuple,
     binner: BinMesh2SpectrumPoles,
+    norm: jnp.ndarray,
     los: Literal["local", "x", "y", "z", "firstpoint", "endpoint"] = "local",
     flags: tuple[str] = (),
     pbar: bool = True,
@@ -35,6 +36,8 @@ def get_window_geometry(
         Input multipoles, can use ``theory_edges``'s ``ells`` if it is an :py:class:`lsstypes.ObservableTree`.
     binner : BinMesh2SpectrumPoles
         Binning operator to compute the output power spectrum.
+    norm : jnp.ndarray
+        The same norm as for the mock survey P(k) computation (*i.e.*, with CIC resampling and a cellsize of 10.)
     los : Literal["local", "x", "y", "z", "firstpoint", "endpoint"], optional
         Line of sight, by default "local"
     flags : tuple[str], optional
@@ -53,7 +56,6 @@ def get_window_geometry(
     -----
     This is simply a thin wrapper around :py:func:`jaxpower.compute_mesh2_spectrum_window`.
     """
-    norm = compute_normalization(selection, selection, bin=binner)
     return compute_mesh2_spectrum_window(selection, edgesin=theory_edges, ellsin=theory_ells, bin=binner, norm=norm, los=los, flags=flags, pbar=pbar, **kwargs)
 
 
