@@ -127,8 +127,8 @@ def get_AIC_foward_model(
     data_weights: jnp.ndarray,
     randoms_weights: jnp.ndarray,
     # AIC specific data
-    template_values: jnp.ndarray,
-    mask_is_data: jnp.ndarray,
+    template_values_data: jnp.ndarray,
+    template_values_randoms: jnp.ndarray,
     # AIC specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
@@ -143,10 +143,10 @@ def get_AIC_foward_model(
         Data weights.
     randoms_weights : jnp.ndarray
         Randoms weights.
-    template_values : jnp.ndarray
-        Values of the templates for the data and the randoms.
-    mask_is_data : jnp.ndarray
-        Mask indicating where data is in ``template_values``.
+    template_values_data : jnp.ndarray
+        Values of the templates for the data.
+    template_values_randoms : jnp.ndarray
+        Values of the templates for the randoms.
     tail : float, optional
         Percentile of the (random's) template value distribution to remove, by default 0.5
     bin_margin : float, optional
@@ -163,8 +163,8 @@ def get_AIC_foward_model(
         data_weights=data_weights,
         randoms_weights=randoms_weights,
         # AIC specific data
-        template_values=template_values,
-        mask_is_data=mask_is_data,
+        template_values_data=template_values_data,
+        template_values_randoms=template_values_randoms,
         # AIC specific parameters
         tail=tail,
         bin_margin=bin_margin,
