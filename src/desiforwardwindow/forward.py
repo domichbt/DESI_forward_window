@@ -20,8 +20,8 @@ from .utils import bincount_2d
 
 
 def _prepare_AIC(
-    data_weights: ParticleField,
-    randoms_weights: ParticleField,
+    data_weights: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
     # AIC specific data
     template_values_data: jnp.ndarray,
     template_values_randoms: jnp.ndarray,
