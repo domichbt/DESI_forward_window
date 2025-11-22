@@ -1,5 +1,6 @@
 """Forward modeling of observational effects."""
 
+import logging
 from collections.abc import Callable
 from functools import partial
 from typing import Literal
@@ -17,6 +18,13 @@ from jaxpower import (
 from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
 
 from .utils import bincount_2d
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+stream_handler = logging.StreamHandler()
+formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S")
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
 
 
 def _prepare_AIC(
@@ -75,9 +83,17 @@ def _prepare_AIC(
         length=n_bins + 1,
     )[:, 1:, ...]
 
+    wt1 = randoms_weights * mask_extremes_r
+    masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
+    jax.block_until_ready(masked_templates_normalized)
+    jax.debug.inspect_array_sharding(masked_templates_normalized.T, callback=lambda a: print("templates: " + str(a)))
+    jax.debug.inspect_array_sharding(randoms_weights, callback=lambda a: print("weights: " + str(a)))
+    jax.debug.inspect_array_sharding(jnp.ones_like(randoms_weights), callback=lambda a: print("oneslike: " + str(a)))
+    wt2 = jnp.concatenate([jnp.ones_like(randoms_weights)[..., None], masked_templates_normalized], axis=-1)
+
     jacobian = bincount_2d(
         templates_digitized_r.T,
-        weights=(randoms_weights * mask_extremes_r * jnp.stack([jnp.ones_like(randoms_weights), *(templates_normalized_r * mask_extremes_r[:, None]).T])).T,
+        weights=wt1[:, None] * wt2,
         length=n_bins + 1,
     )[:, 1:, ...]
 
@@ -122,7 +138,7 @@ def _get_AIC_weights(
     return 1 / (1 + p_opt[0] + data_templates_normalized.dot(p_opt[1:]))
 
 
-def get_AIC_foward_model(
+def get_AIC_forward_model(
     data_weights: jnp.ndarray,
     randoms_weights: jnp.ndarray,
     # AIC specific data
@@ -169,7 +185,8 @@ def get_AIC_foward_model(
         bin_margin=bin_margin,
         n_bins=n_bins,
     )
-    get_AIC_weights = jax.jit(partial(_get_AIC_weights, n_bins=n_bins, **fixed_args))  # Can fix everything but data_weights
+    # get_AIC_weights = jax.jit(partial(_get_AIC_weights, n_bins=n_bins, **fixed_args))  # Can fix everything but data_weights
+    get_AIC_weights = partial(_get_AIC_weights, n_bins=n_bins, **fixed_args)  # Can fix everything but data_weights
     return get_AIC_weights
 
 
@@ -190,7 +207,10 @@ def _prepare_RIC(
     randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins_RIC + 1)[1:]
 
     data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
+    jax.debug.inspect_array_sharding(data_positions.sum(axis=-1), callback=lambda a: logger.info("data_positions.sum(axis=-1): %s", str(a)))
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)
+    jax.debug.inspect_array_sharding(data_distances, callback=lambda a: logger.info("data_distances: %s", str(a)))
+    jax.debug.inspect_array_sharding(data_distances_digitized, callback=lambda a: logger.info("data_distances_digitized: %s", str(a)))
 
     randoms_sum = randoms_weights.sum()
 
@@ -201,6 +221,11 @@ def _prepare_RIC(
     }
 
 
+from jax.sharding import PartitionSpec as P
+from jaxpower.mesh import get_sharding_mesh
+from jax.experimental.shard_map import shard_map
+
+
 def _get_RIC_weights(
     data_weights,
     data_distances_digitized,
@@ -208,16 +233,33 @@ def _get_RIC_weights(
     randoms_distances_binned,
     randoms_sum,
 ):
+    # sharding_mesh = get_sharding_mesh()
+    # print(sharding_mesh)
+    # data_distances_digitized = jax.lax.with_sharding_constraint(
+    #     data_distances_digitized, jax.sharding.NamedSharding(sharding_mesh, spec=P(sharding_mesh.axis_names))
+    # )
+    # jax.debug.inspect_array_sharding(data_weights, callback=lambda a: logger.info("data_weights: %s", str(a)))
+    # jax.debug.inspect_array_sharding(data_distances_digitized, callback=lambda a: logger.info("data_distances_digitized: %s", str(a)))
+    # jax.debug.inspect_array_sharding(randoms_distances_binned, callback=lambda a: logger.info("randoms_distances_binned: %s", str(a)))
+    # jax.debug.inspect_array_sharding(randoms_sum, callback=lambda a: logger.info("randoms_sum: %s", str(a)))
+    # count = _count = lambda dist, weights: jnp.bincount(dist, weights=weights, length=n_bins_RIC + 1)[1:]
+
+    # if sharding_mesh.axis_names:
+    #     print("OOOKK")
+
+    #     def count(dist, weights):
+    #         value = _count(dist, weights)
+    #         return jax.lax.psum(value, sharding_mesh.axis_names)
+
+    #     in_specs = (P(sharding_mesh.axis_names),) * 2
+    #     count = shard_map(count, mesh=sharding_mesh, in_specs=in_specs, out_specs=P(None))
+
+    # return count(data_distances_digitized, data_weights)
+
     data_distances_binned = jnp.bincount(data_distances_digitized, weights=data_weights, length=n_bins_RIC + 1)[1:]
-    return (
-        data_weights.sum()
-        / randoms_sum
-        * jnp.where(
-            data_distances_binned == 0,
-            1.0,
-            (randoms_distances_binned / data_distances_binned),
-        )[data_distances_digitized - 1]
-    )
+
+    tmp = data_weights.sum() / randoms_sum * jnp.where(data_distances_binned == 0, 1.0, (randoms_distances_binned / data_distances_binned))
+    return tmp[data_distances_digitized - 1]
 
 
 def get_RIC_forward_model(
@@ -261,7 +303,8 @@ def get_RIC_forward_model(
         n_bins_RIC=n_bins_RIC,
     )
 
-    get_RIC_weights = jax.jit(partial(_get_RIC_weights, n_bins_RIC=n_bins_RIC, **fixed_args))  # Can fix everything but data_weights
+    # get_RIC_weights = jax.jit(partial(_get_RIC_weights, n_bins_RIC=n_bins_RIC, **fixed_args))  # Can fix everything but data_weights
+    get_RIC_weights = partial(_get_RIC_weights, n_bins_RIC=n_bins_RIC, **fixed_args)  # Can fix everything but data_weights
     return get_RIC_weights
 
 
@@ -274,8 +317,8 @@ def _prepare_NAM(
 ):
     import healpy as hp
 
-    data_hpx = hp.vec2pix(*[nside, *data_positions.T])
-    randoms_hpx = hp.vec2pix(*[nside, *randoms_positions.T])
+    data_hpx = hp.vec2pix(nside, data_positions[:, 0], data_positions[:, 1], data_positions[:, 2])
+    randoms_hpx = hp.vec2pix(nside, randoms_positions[:, 0], randoms_positions[:, 1], randoms_positions[:, 2])
 
     randoms_hpx_binned = jnp.bincount(randoms_hpx, weights=randoms_weights, length=12 * nside**2)
 
@@ -332,7 +375,7 @@ def get_NAM_forward_model(
     Returns
     -------
     Callable
-        Jitted, differentiable ``get_NAM_weights`` function that takes in ``data.weights`` and returns NAM weights.
+        Jittable, differentiable ``get_NAM_weights`` function that takes in ``data.weights`` and returns NAM weights.
     """
     fixed_args = _prepare_NAM(
         data_positions=data_positions,
@@ -341,7 +384,7 @@ def get_NAM_forward_model(
         nside=nside,
     )
 
-    get_NAM_weights = jax.jit(partial(_get_NAM_weights, **fixed_args))  # Can fix everything but data_weights
+    get_NAM_weights = partial(_get_NAM_weights, **fixed_args)  # Can fix everything but data_weights
     return get_NAM_weights
 
 
@@ -396,6 +439,10 @@ def mock_survey(
     -------
     Mesh2SpectrumPoles
         Realization of an observation of the theory power spectrum.
+
+    Notes
+    -----
+    NAM is a stronger kind of AIC. Applying both AIC and NAM or just NAM will result in the same spectrum.
     """
     # Generate a gaussian mesh mock with exact required theory P(k)
     mattrs = data.attrs
@@ -407,7 +454,7 @@ def mock_survey(
         unitary_amplitude=unitary_amplitude,
     )
     # Paint it on the portion of randoms designated as "data" -> data catalog w/ geometry
-    data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True, exchange=True) + 1))
+    data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True) + 1))
     del mesh
     # Apply RIC if necessary
     if get_RIC_weights is not None:
