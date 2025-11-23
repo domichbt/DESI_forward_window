@@ -20,68 +20,72 @@ from .utils import bincount_2d
 
 
 def _prepare_AIC(
-    data_weights: ParticleField,
-    randoms_weights: ParticleField,
+    data_weights: jnp.ndarray,
+    randoms_weights: jnp.ndarray,
     # AIC specific data
-    template_values: jnp.ndarray,
-    mask_is_data: jnp.ndarray,
+    template_values_data: jnp.ndarray,
+    template_values_randoms: jnp.ndarray,
     # AIC specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
     n_bins: int = 10,
 ) -> dict[str, jnp.ndarray]:
-    mask_is_randoms = jnp.invert(mask_is_data)
-    templates_lower_tails = jnp.percentile(template_values[mask_is_randoms].T, tail / 2, axis=1)
-    templates_upper_tails = jnp.percentile(template_values[mask_is_randoms].T, 100 - tail / 2, axis=1)
+    templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
+    templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
 
-    mask_extremes = jnp.invert(
+    mask_extremes_r = jnp.invert(
         jnp.any(
-            (template_values < templates_lower_tails).T | (template_values > templates_upper_tails).T,
+            (template_values_randoms < templates_lower_tails).T | (template_values_randoms > templates_upper_tails).T,
+            axis=0,
+        )
+    )
+
+    mask_extremes_d = jnp.invert(
+        jnp.any(
+            (template_values_data < templates_lower_tails).T | (template_values_data > templates_upper_tails).T,
             axis=0,
         )
     )
 
     bin_edges = jnp.linspace(
-        start=template_values[mask_extremes, :].min(axis=0) - bin_margin,
-        stop=template_values[mask_extremes, :].max(axis=0) + bin_margin,
+        start=templates_lower_tails - bin_margin,
+        stop=templates_upper_tails + bin_margin,
         num=n_bins + 1,
     )
 
-    templates_normalized = (template_values - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])  # For binning, have to mask
+    templates_normalized_r = (template_values_randoms - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+    templates_normalized_d = (template_values_data - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
 
-    mask_extremes_in_randoms = mask_extremes[mask_is_randoms]
-    mask_extremes_in_data = mask_extremes[mask_is_data]
+    templates_digitized_r = jnp.clip(
+        jnp.floor(templates_normalized_r * n_bins).astype(int) - (templates_normalized_r == bin_edges[-1, :]) + 1,
+        min=0,
+        max=n_bins + 1,
+    )
 
-    templates_digitized = jnp.clip(
-        jnp.floor(templates_normalized * n_bins).astype(int) - (template_values == bin_edges[-1, :]) + 1,
+    templates_digitized_d = jnp.clip(
+        jnp.floor(templates_normalized_d * n_bins).astype(int) - (templates_normalized_d == bin_edges[-1, :]) + 1,
         min=0,
         max=n_bins + 1,
     )
 
     # Binned weights and jacobian are used in the solution
     randoms_weights_binned = bincount_2d(
-        templates_digitized[mask_is_randoms & mask_extremes].T,
-        weights=randoms_weights[mask_extremes_in_randoms],
+        templates_digitized_r.T,
+        weights=randoms_weights * mask_extremes_r,  # set extremes weights to 0
         length=n_bins + 1,
     )[:, 1:, ...]
+
+    masked_randoms_weights = randoms_weights * mask_extremes_r
+    masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
+    wt2 = jnp.concatenate([jnp.ones_like(randoms_weights)[..., None], masked_templates_normalized], axis=-1)
 
     jacobian = bincount_2d(
-        templates_digitized[mask_is_randoms & mask_extremes].T,
-        weights=(
-            randoms_weights[mask_extremes_in_randoms]
-            * jnp.stack(
-                [
-                    jnp.ones_like(randoms_weights[mask_extremes_in_randoms]),
-                    *templates_normalized[mask_is_randoms & mask_extremes, :].T,
-                ]
-            )
-        ).T,
+        templates_digitized_r.T,
+        weights=masked_randoms_weights[:, None] * wt2,
         length=n_bins + 1,
     )[:, 1:, ...]
 
-    normalization = (
-        data_weights[mask_extremes_in_data].sum() / randoms_weights[mask_extremes_in_randoms].sum()
-    )  # without extremes, without the actualized data weights: approximate
+    normalization = (data_weights * mask_extremes_d).sum() / (randoms_weights * mask_extremes_r).sum()  # without the updated data weights: approximate
 
     # Ravel everything to take advantage of matrix operations
     jacobian = jacobian.reshape((-1, jacobian.shape[-1]))
@@ -91,20 +95,20 @@ def _prepare_AIC(
     factor = jnp.linalg.inv(transpose_jw.dot(jacobian)).dot(transpose_jw)
     constant = normalization * factor.dot(randoms_weights_binned)
 
-    # pre-masked templates
-    data_templates_digitized = templates_digitized[mask_is_data]
-    data_templates_normalized = templates_normalized[mask_is_data]
+    # pre-computed templates
+    data_templates_digitized = templates_digitized_d
+    data_templates_normalized = templates_normalized_d
 
     return {
         "data_templates_digitized": data_templates_digitized,
-        "mask_extremes_in_data": mask_extremes_in_data,
-        "n_bins": n_bins,
+        "mask_extremes_in_data": mask_extremes_d,
         "data_templates_normalized": data_templates_normalized,
         "factor": factor,
         "constant": constant,
     }
 
 
+@partial(jax.jit, static_argnames=["n_bins"])
 def _get_AIC_weights(
     data_weights: jnp.ndarray,
     data_templates_digitized: jnp.ndarray,
@@ -123,12 +127,12 @@ def _get_AIC_weights(
     return 1 / (1 + p_opt[0] + data_templates_normalized.dot(p_opt[1:]))
 
 
-def get_AIC_foward_model(
+def get_AIC_forward_model(
     data_weights: jnp.ndarray,
     randoms_weights: jnp.ndarray,
     # AIC specific data
-    template_values: jnp.ndarray,
-    mask_is_data: jnp.ndarray,
+    template_values_data: jnp.ndarray,
+    template_values_randoms: jnp.ndarray,
     # AIC specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
@@ -143,10 +147,10 @@ def get_AIC_foward_model(
         Data weights.
     randoms_weights : jnp.ndarray
         Randoms weights.
-    template_values : jnp.ndarray
-        Values of the templates for the data and the randoms.
-    mask_is_data : jnp.ndarray
-        Mask indicating where data is in ``template_values``.
+    template_values_data : jnp.ndarray
+        Values of the templates for the data.
+    template_values_randoms : jnp.ndarray
+        Values of the templates for the randoms.
     tail : float, optional
         Percentile of the (random's) template value distribution to remove, by default 0.5
     bin_margin : float, optional
@@ -163,15 +167,14 @@ def get_AIC_foward_model(
         data_weights=data_weights,
         randoms_weights=randoms_weights,
         # AIC specific data
-        template_values=template_values,
-        mask_is_data=mask_is_data,
+        template_values_data=template_values_data,
+        template_values_randoms=template_values_randoms,
         # AIC specific parameters
         tail=tail,
         bin_margin=bin_margin,
         n_bins=n_bins,
     )
-    get_AIC_weights = jax.jit(partial(_get_AIC_weights, **fixed_args))  # Can fix everything but data_weights
-    return get_AIC_weights
+    return partial(_get_AIC_weights, n_bins=n_bins, **fixed_args)
 
 
 def _prepare_RIC(
@@ -181,14 +184,14 @@ def _prepare_RIC(
     boxcenter: jnp.ndarray,
     boxsize: jnp.ndarray,
     # RIC specific parameters
-    n_bins_RIC: int,
+    n_bins: int,
 ):
     dmin = jnp.min(boxcenter - boxsize / 2.0)
     dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
-    distance_edges = jnp.linspace(dmin, dmax, n_bins_RIC)
+    distance_edges = jnp.linspace(dmin, dmax, n_bins)
     randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)  # could be made faster with jnp.floor
-    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins_RIC + 1)[1:]
+    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins + 1)[1:]
 
     data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)
@@ -197,29 +200,22 @@ def _prepare_RIC(
 
     return {
         "data_distances_digitized": data_distances_digitized,
-        "n_bins_RIC": n_bins_RIC,
         "randoms_distances_binned": randoms_distances_binned,
         "randoms_sum": randoms_sum,
     }
 
 
+@partial(jax.jit, static_argnames=["n_bins"])
 def _get_RIC_weights(
     data_weights,
     data_distances_digitized,
-    n_bins_RIC,
+    n_bins,
     randoms_distances_binned,
     randoms_sum,
 ):
-    data_distances_binned = jnp.bincount(data_distances_digitized, weights=data_weights, length=n_bins_RIC + 1)[1:]
-    return (
-        data_weights.sum()
-        / randoms_sum
-        * jnp.where(
-            data_distances_binned == 0,
-            1.0,
-            (randoms_distances_binned / data_distances_binned),
-        )[data_distances_digitized - 1]
-    )
+    data_distances_binned = jnp.bincount(data_distances_digitized, weights=data_weights, length=n_bins + 1)[1:]
+    tmp = data_weights.sum() / randoms_sum * jnp.where(data_distances_binned == 0, 1.0, (randoms_distances_binned / data_distances_binned))
+    return tmp[data_distances_digitized - 1]
 
 
 def get_RIC_forward_model(
@@ -229,7 +225,7 @@ def get_RIC_forward_model(
     boxcenter: jnp.ndarray,
     boxsize: jnp.ndarray,
     # RIC specific parameters
-    n_bins_RIC: int,
+    n_bins: int,
 ) -> Callable:
     """
     Build a jittable, differentiable ``get_RIC_weights`` function that takes in `data.weights` and returns RIC (forward model) weights.
@@ -260,11 +256,10 @@ def get_RIC_forward_model(
         randoms_weights=randoms_weights,
         boxcenter=boxcenter,
         boxsize=boxsize,
-        n_bins_RIC=n_bins_RIC,
+        n_bins=n_bins,
     )
 
-    get_RIC_weights = jax.jit(partial(_get_RIC_weights, **fixed_args))  # Can fix everything but data_weights
-    return get_RIC_weights
+    return partial(_get_RIC_weights, n_bins=n_bins, **fixed_args)
 
 
 def _prepare_NAM(
@@ -274,11 +269,25 @@ def _prepare_NAM(
     # RIC specific parameters
     nside: int,
 ):
-    import healpy as hp
+    def _vec2pix(positions):
+        import healpy as hp
 
-    data_hpx = hp.vec2pix(*[nside, *data_positions.T])
-    randoms_hpx = hp.vec2pix(*[nside, *randoms_positions.T])
+        return hp.vec2pix(nside, *positions.T)
 
+    def vec2pix(positions):
+        return jax.pure_callback(_vec2pix, jax.ShapeDtypeStruct(positions.shape[:1], jnp.int64), positions)
+
+    from jax.experimental.shard_map import shard_map
+    from jax.sharding import PartitionSpec as P
+    from jaxpower.mesh import get_sharding_mesh
+
+    sharding_mesh = get_sharding_mesh()
+
+    if sharding_mesh.axis_names:
+        vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+
+    data_hpx = vec2pix(data_positions)
+    randoms_hpx = vec2pix(randoms_positions)
     randoms_hpx_binned = jnp.bincount(randoms_hpx, weights=randoms_weights, length=12 * nside**2)
 
     randoms_sum = randoms_weights.sum()  # is that not just randoms_hpx_binned.sum() ?
@@ -291,6 +300,7 @@ def _prepare_NAM(
     }
 
 
+@partial(jax.jit, static_argnames=["nside"])
 def _get_NAM_weights(
     data_weights,
     data_hpx,
@@ -334,7 +344,7 @@ def get_NAM_forward_model(
     Returns
     -------
     Callable
-        Jitted, differentiable ``get_NAM_weights`` function that takes in ``data.weights`` and returns NAM weights.
+        Jittable, differentiable ``get_NAM_weights`` function that takes in ``data.weights`` and returns NAM weights.
     """
     fixed_args = _prepare_NAM(
         data_positions=data_positions,
@@ -343,7 +353,7 @@ def get_NAM_forward_model(
         nside=nside,
     )
 
-    get_NAM_weights = jax.jit(partial(_get_NAM_weights, **fixed_args))  # Can fix everything but data_weights
+    get_NAM_weights = partial(_get_NAM_weights, **fixed_args)  # Can fix everything but data_weights
     return get_NAM_weights
 
 
@@ -357,6 +367,7 @@ def mock_survey(
     data: ParticleField,
     get_RIC_weights: Callable | None,
     get_AIC_weights: Callable | None,
+    get_NAM_weights: Callable | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     randoms_mesh: RealMeshField,
@@ -382,6 +393,8 @@ def mock_survey(
         Optional function taking in ``data.weights``-like arguments and returning weights to apply the radial integral constraint. See :py:func:`get_RIC_forward_model`.
     get_AIC_weights : Callable | None
         Optional function taking in ``data.weights``-like arguments and returning weights to apply the angular integral constraint. See :py:func:`get_AIC_forward_model`.
+    get_NAM_weights : Callable | None
+        Optional function taking in ``data.weights``-like arguments and returning weights to apply the NAM procedure. See :py:func:`get_NAM_forward_model`.
     binner : BinMesh2SpectrumPoles
         Binning operator to compute the output power spectrum.
     randoms_mesh : RealMeshField
@@ -395,6 +408,10 @@ def mock_survey(
     -------
     Mesh2SpectrumPoles
         Realization of an observation of the theory power spectrum.
+
+    Notes
+    -----
+    NAM is a stronger kind of AIC. Applying both AIC and NAM or just NAM will result in the same spectrum.
     """
     # Generate a gaussian mesh mock with exact required theory P(k)
     mattrs = data.attrs
@@ -406,7 +423,7 @@ def mock_survey(
         unitary_amplitude=unitary_amplitude,
     )
     # Paint it on the portion of randoms designated as "data" -> data catalog w/ geometry
-    data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True, exchange=True) + 1))
+    data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True) + 1))
     del mesh
     # Apply RIC if necessary
     if get_RIC_weights is not None:
@@ -416,6 +433,10 @@ def mock_survey(
     if get_AIC_weights is not None:
         AIC_weights = get_AIC_weights(data_field.weights)
         data_field = data_field.clone(weights=data_field.weights * AIC_weights)
+    # Apply AIC if necessary
+    if get_NAM_weights is not None:
+        NAM_weights = get_NAM_weights(data_field.weights)
+        data_field = data_field.clone(weights=data_field.weights * NAM_weights)
     # Paint to mesh for P(k) computation and build FKP mesh
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()

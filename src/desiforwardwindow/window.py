@@ -19,7 +19,7 @@ def get_window_geometry(
     binner: BinMesh2SpectrumPoles,
     norm: jnp.ndarray,
     los: Literal["local", "x", "y", "z", "firstpoint", "endpoint"] = "local",
-    flags: tuple[str] = (),
+    flags: tuple[str, ...] = (),
     pbar: bool = True,
     **kwargs,
 ) -> WindowMatrix:
