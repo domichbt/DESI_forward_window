@@ -8,7 +8,7 @@ from functools import partial
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from jaxpower import BinMesh2SpectrumPoles, FKPField, ParticleField, compute_fkp2_normalization, create_sharding_mesh, get_mesh_attrs
+from jaxpower import BinMesh2SpectrumPoles, FKPField, ParticleField, compute_fkp2_normalization, create_sharding_mesh, get_mesh_attrs, setup_logging
 from jaxpower.mesh import _get_extent, make_array_from_process_local_data
 from lsstypes import mean
 from tqdm import tqdm
@@ -17,18 +17,14 @@ from desiforwardwindow.convenience import fiducial_planck_2018, get_randoms
 from desiforwardwindow.forward import get_AIC_forward_model, get_NAM_forward_model, get_RIC_forward_model, mock_survey
 
 logger = logging.getLogger("sharding")
-logger.setLevel(logging.DEBUG)
-stream_handler = logging.StreamHandler()
-formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S")
-stream_handler.setFormatter(formatter)
-logger.addHandler(stream_handler)
 
+setup_logging("info")
 logger.info("Log test")
 
 LOS = "local"
 UNITARY_AMPLITUDE = True
 BATCH_SIZE = 1
-nreal = 10
+nreal = 2
 
 regression_maps = [
     "STARDENS",
@@ -114,19 +110,20 @@ with create_sharding_mesh() as sharding_mesh:
         data_positions=data.positions,
         randoms_positions=randoms.positions,
         randoms_weights=randoms.weights,
-        n_bins_RIC=n_bins_RIC,
+        n_bins=n_bins_RIC,
         boxsize=boxsize,
         boxcenter=boxcenter,
     )
 
     logger.info("Trying to get RIC weights.")
-    get_RIC_weights(data.weights)  # .block_until_ready()
+    get_RIC_weights(data.weights).block_until_ready()
     logger.info("Got RIC weights.")
 
     if data.exchange_direct is not None:
         template_values_data = data.exchange_direct(make_array_from_process_local_data(template_values_data, pad="mean"), pad=0.0)
     if randoms.exchange_direct is not None:
         template_values_randoms = randoms.exchange_direct(make_array_from_process_local_data(template_values_randoms, pad="mean"), pad=0.0)
+
     get_AIC_weights = get_AIC_forward_model(
         data_weights=data.weights,
         randoms_weights=randoms.weights,
@@ -135,13 +132,12 @@ with create_sharding_mesh() as sharding_mesh:
         n_bins=n_bins_AIC,
     )
 
-    # get_NAM_weights = get_NAM_forward_model(
-    #     data_positions=data.positions,
-    #     randoms_positions=randoms.positions,
-    #     randoms_weights=randoms.weights,
-    #     nside=nside,
-    # )
-    get_NAM_weights = None
+    get_NAM_weights = get_NAM_forward_model(
+        data_positions=data.positions,
+        randoms_positions=randoms.positions,
+        randoms_weights=randoms.weights,
+        nside=nside,
+    )
     logger.debug("Data size: %s", data_size)
     logger.debug("Data field weights shape: %s", data.weights.shape)
 
@@ -149,9 +145,9 @@ with create_sharding_mesh() as sharding_mesh:
     logger.info("Trying to get AIC weights.")
     get_AIC_weights(data.weights).block_until_ready()
     logger.info("Got AIC weights.")
-    # logger.info("Trying to get NAM weights.")
-    # get_NAM_weights(data.weights).block_until_ready()
-    # logger.info("Got NAM weights.")
+    logger.info("Trying to get NAM weights.")
+    get_NAM_weights(data.weights).block_until_ready()
+    logger.info("Got NAM weights.")
 
     # To go from the mesh to the observed power spectrum
     # Can always rebin ell = 2 to 0.002 later

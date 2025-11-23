@@ -20,11 +20,6 @@ from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
 from .utils import bincount_2d
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-stream_handler = logging.StreamHandler()
-formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S")
-stream_handler.setFormatter(formatter)
-logger.addHandler(stream_handler)
 
 
 def _prepare_AIC(
@@ -86,9 +81,9 @@ def _prepare_AIC(
     wt1 = randoms_weights * mask_extremes_r
     masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
     jax.block_until_ready(masked_templates_normalized)
-    jax.debug.inspect_array_sharding(masked_templates_normalized.T, callback=lambda a: print("templates: " + str(a)))
-    jax.debug.inspect_array_sharding(randoms_weights, callback=lambda a: print("weights: " + str(a)))
-    jax.debug.inspect_array_sharding(jnp.ones_like(randoms_weights), callback=lambda a: print("oneslike: " + str(a)))
+    #jax.debug.inspect_array_sharding(masked_templates_normalized.T, callback=lambda a: print("templates: " + str(a)))
+    #jax.debug.inspect_array_sharding(randoms_weights, callback=lambda a: print("weights: " + str(a)))
+    #jax.debug.inspect_array_sharding(jnp.ones_like(randoms_weights), callback=lambda a: print("oneslike: " + str(a)))
     wt2 = jnp.concatenate([jnp.ones_like(randoms_weights)[..., None], masked_templates_normalized], axis=-1)
 
     jacobian = bincount_2d(
@@ -120,6 +115,7 @@ def _prepare_AIC(
     }
 
 
+@partial(jax.jit, static_argnames=['n_bins'])
 def _get_AIC_weights(
     data_weights: jnp.ndarray,
     data_templates_digitized: jnp.ndarray,
@@ -185,9 +181,7 @@ def get_AIC_forward_model(
         bin_margin=bin_margin,
         n_bins=n_bins,
     )
-    # get_AIC_weights = jax.jit(partial(_get_AIC_weights, n_bins=n_bins, **fixed_args))  # Can fix everything but data_weights
-    get_AIC_weights = partial(_get_AIC_weights, n_bins=n_bins, **fixed_args)  # Can fix everything but data_weights
-    return get_AIC_weights
+    return partial(_get_AIC_weights, n_bins=n_bins, **fixed_args)
 
 
 def _prepare_RIC(
@@ -197,20 +191,20 @@ def _prepare_RIC(
     boxcenter: jnp.ndarray,
     boxsize: jnp.ndarray,
     # RIC specific parameters
-    n_bins_RIC: int,
+    n_bins: int,
 ):
     dmin = jnp.min(boxcenter - boxsize / 2.0)
     dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
-    distance_edges = jnp.linspace(dmin, dmax, n_bins_RIC)
+    distance_edges = jnp.linspace(dmin, dmax, n_bins)
     randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)  # could be made faster with jnp.floor
-    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins_RIC + 1)[1:]
+    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins + 1)[1:]
 
     data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
-    jax.debug.inspect_array_sharding(data_positions.sum(axis=-1), callback=lambda a: logger.info("data_positions.sum(axis=-1): %s", str(a)))
+    #jax.debug.inspect_array_sharding(data_positions.sum(axis=-1), callback=lambda a: logger.info("data_positions.sum(axis=-1): %s", str(a)))
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)
-    jax.debug.inspect_array_sharding(data_distances, callback=lambda a: logger.info("data_distances: %s", str(a)))
-    jax.debug.inspect_array_sharding(data_distances_digitized, callback=lambda a: logger.info("data_distances_digitized: %s", str(a)))
+    #jax.debug.inspect_array_sharding(data_distances, callback=lambda a: logger.info("data_distances: %s", str(a)))
+    #jax.debug.inspect_array_sharding(data_distances_digitized, callback=lambda a: logger.info("data_distances_digitized: %s", str(a)))
 
     randoms_sum = randoms_weights.sum()
 
@@ -221,42 +215,25 @@ def _prepare_RIC(
     }
 
 
-from jax.sharding import PartitionSpec as P
-from jaxpower.mesh import get_sharding_mesh
-from jax.experimental.shard_map import shard_map
-
-
+@partial(jax.jit, static_argnames=['n_bins'])
 def _get_RIC_weights(
     data_weights,
     data_distances_digitized,
-    n_bins_RIC,
+    n_bins,
     randoms_distances_binned,
     randoms_sum,
 ):
-    # sharding_mesh = get_sharding_mesh()
-    # print(sharding_mesh)
+    #sharding_mesh = get_sharding_mesh()
+    #print(sharding_mesh)
     # data_distances_digitized = jax.lax.with_sharding_constraint(
     #     data_distances_digitized, jax.sharding.NamedSharding(sharding_mesh, spec=P(sharding_mesh.axis_names))
     # )
-    # jax.debug.inspect_array_sharding(data_weights, callback=lambda a: logger.info("data_weights: %s", str(a)))
-    # jax.debug.inspect_array_sharding(data_distances_digitized, callback=lambda a: logger.info("data_distances_digitized: %s", str(a)))
+    #jax.debug.inspect_array_sharding(data_weights, callback=lambda a: logger.info("data_weights: %s", str(a)))
+    #jax.debug.inspect_array_sharding(data_distances_digitized, callback=lambda a: logger.info("data_distances_digitized: %s", str(a)))
     # jax.debug.inspect_array_sharding(randoms_distances_binned, callback=lambda a: logger.info("randoms_distances_binned: %s", str(a)))
     # jax.debug.inspect_array_sharding(randoms_sum, callback=lambda a: logger.info("randoms_sum: %s", str(a)))
-    # count = _count = lambda dist, weights: jnp.bincount(dist, weights=weights, length=n_bins_RIC + 1)[1:]
 
-    # if sharding_mesh.axis_names:
-    #     print("OOOKK")
-
-    #     def count(dist, weights):
-    #         value = _count(dist, weights)
-    #         return jax.lax.psum(value, sharding_mesh.axis_names)
-
-    #     in_specs = (P(sharding_mesh.axis_names),) * 2
-    #     count = shard_map(count, mesh=sharding_mesh, in_specs=in_specs, out_specs=P(None))
-
-    # return count(data_distances_digitized, data_weights)
-
-    data_distances_binned = jnp.bincount(data_distances_digitized, weights=data_weights, length=n_bins_RIC + 1)[1:]
+    data_distances_binned = jnp.bincount(data_distances_digitized, weights=data_weights, length=n_bins + 1)[1:]
 
     tmp = data_weights.sum() / randoms_sum * jnp.where(data_distances_binned == 0, 1.0, (randoms_distances_binned / data_distances_binned))
     return tmp[data_distances_digitized - 1]
@@ -269,7 +246,7 @@ def get_RIC_forward_model(
     boxcenter: jnp.ndarray,
     boxsize: jnp.ndarray,
     # RIC specific parameters
-    n_bins_RIC: int,
+    n_bins: int,
 ) -> Callable:
     """
     Build a jittable, differentiable ``get_RIC_weights`` function that takes in `data.weights` and returns RIC (forward model) weights.
@@ -300,12 +277,10 @@ def get_RIC_forward_model(
         randoms_weights=randoms_weights,
         boxcenter=boxcenter,
         boxsize=boxsize,
-        n_bins_RIC=n_bins_RIC,
+        n_bins=n_bins,
     )
 
-    # get_RIC_weights = jax.jit(partial(_get_RIC_weights, n_bins_RIC=n_bins_RIC, **fixed_args))  # Can fix everything but data_weights
-    get_RIC_weights = partial(_get_RIC_weights, n_bins_RIC=n_bins_RIC, **fixed_args)  # Can fix everything but data_weights
-    return get_RIC_weights
+    return partial(_get_RIC_weights, n_bins=n_bins, **fixed_args)
 
 
 def _prepare_NAM(
@@ -315,11 +290,27 @@ def _prepare_NAM(
     # RIC specific parameters
     nside: int,
 ):
-    import healpy as hp
 
-    data_hpx = hp.vec2pix(nside, data_positions[:, 0], data_positions[:, 1], data_positions[:, 2])
-    randoms_hpx = hp.vec2pix(nside, randoms_positions[:, 0], randoms_positions[:, 1], randoms_positions[:, 2])
+    def _vec2pix(positions):
+        import healpy as hp
+        return hp.vec2pix(nside, *positions.T)
 
+    def vec2pix(positions):
+        return jax.pure_callback(_vec2pix, jax.ShapeDtypeStruct(positions.shape[:1], jnp.int64), positions)
+
+    from jaxpower.mesh import get_sharding_mesh
+    from jax.sharding import PartitionSpec as P
+    from jax.experimental.shard_map import shard_map
+
+    sharding_mesh = get_sharding_mesh()
+
+    if sharding_mesh.axis_names:
+        vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+    
+    data_hpx = vec2pix(data_positions)
+    randoms_hpx = vec2pix(randoms_positions)
+    #jax.debug.inspect_array_sharding(data_positions, callback=lambda a: print("data_positions: " + str(a)))
+    #jax.debug.inspect_array_sharding(data_hpx, callback=lambda a: print("data_hpx: " + str(a)))
     randoms_hpx_binned = jnp.bincount(randoms_hpx, weights=randoms_weights, length=12 * nside**2)
 
     randoms_sum = randoms_weights.sum()  # is that not just randoms_hpx_binned.sum() ?
@@ -332,6 +323,7 @@ def _prepare_NAM(
     }
 
 
+@partial(jax.jit, static_argnames=['nside'])
 def _get_NAM_weights(
     data_weights,
     data_hpx,
