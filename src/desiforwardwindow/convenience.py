@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from lsstypes import ObservableLeaf, ObservableTree
+from jaxpower.types import ObservableLeaf, ObservableTree
 
 from .utils import get_clustering_positions_weights
 

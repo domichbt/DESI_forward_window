@@ -66,7 +66,7 @@ def get_window_spikes(
     seeds: list[jnp.ndarray] | None = None,
     batch_size: int = 1,
     mock_survey_kw: dict | None = None,
-    unhashable: list[str] | None = None,
+    static_argnames: list[str] | None = None,
 ):
     """
     Estimate the response (window matrix component) of a given observation forward modelling ``mock_survey`` for some fiducial theory input ``theory``.
@@ -87,8 +87,8 @@ def get_window_spikes(
         How many spikes to run in parallel, by default 4.
     mock_survey_kw : dict, optional
         Additional keyword arguments for the ``mock_survey`` function, aside from ``theory`` and ``seed``.
-    unhashable: list[str] | None, optional
-        List of arguments in ``mock_survey_kw`` that are unhashable and should not be passed as ``static_argnames`` when JITting.
+    static_argnames: list[str] | None, optional
+        List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
 
 
     Returns
@@ -97,10 +97,7 @@ def get_window_spikes(
         The average window matrix over ``nreal`` realizations and the individual realizations.
     """
     mock_survey_kw = mock_survey_kw or {}
-    unhashable = unhashable or []
-
-    static_argnames = ["mock_survey", *(mock_survey_kw.keys() - set(unhashable))]
-    print(static_argnames)
+    static_argnames = static_argnames or []
 
     # Initialize a list of windows to fill later
     windows = [None for i in range(nreal)]
@@ -125,7 +122,7 @@ def get_window_spikes(
         islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
         spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
         for imock in range(nreal):
-            spectrum = get_window(injected_theory=spikes, mock_survey=mock_survey, seed=seeds[imock], **mock_survey_kw).T
+            spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seeds[imock], mock_survey=mock_survey, **mock_survey_kw).T
             if windows[imock] is None:
                 windows[imock] = np.zeros((spectrum.shape[0], theory.size))
             windows[imock][..., slice(*islice)] = spectrum
