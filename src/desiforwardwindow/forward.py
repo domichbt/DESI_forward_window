@@ -1,7 +1,5 @@
 """Forward modeling of observational effects."""
 
-from collections.abc import Callable
-from functools import partial
 from typing import Literal
 
 import jax
@@ -28,6 +26,14 @@ AICArgs = make_jax_dataclass(
         "constant",
     ],
     aux_fields=["n_bins"],
+    types_fields={
+        "data_templates_digitized": jnp.ndarray,
+        "mask_extremes_in_data": jnp.ndarray,
+        "data_templates_normalized": jnp.ndarray,
+        "factor": jnp.ndarray,
+        "constant": jnp.ndarray,
+        "n_bins": int,
+    },
 )
 
 RICArgs = make_jax_dataclass(
@@ -38,9 +44,29 @@ RICArgs = make_jax_dataclass(
         "randoms_sum",
     ],
     aux_fields=["n_bins"],
+    types_fields={
+        "data_distances_digitized": jnp.ndarray,
+        "randoms_distances_binned": jnp.ndarray,
+        "randoms_sum": jnp.ndarray,
+        "n_bins": int,
+    },
 )
 
-NAMArgs = make_jax_dataclass(class_name="NAMArgs", dynamic_fields=["data_hpx", "randoms_hpx_binned", "randoms_sum"], aux_fields=["nside"])
+NAMArgs = make_jax_dataclass(
+    class_name="NAMArgs",
+    dynamic_fields=[
+        "data_hpx",
+        "randoms_hpx_binned",
+        "randoms_sum",
+    ],
+    aux_fields=["nside"],
+    types_fields={
+        "data_hpx": jnp.ndarray,
+        "randoms_hpx_binned": jnp.ndarray,
+        "randoms_sum": jnp.ndarray,
+        "nside": int,
+    },
+)
 
 
 def prepare_AIC(

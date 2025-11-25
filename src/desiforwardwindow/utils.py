@@ -191,7 +191,7 @@ def get_clustering_positions_weights(*fns, **kwargs):
     return positions, weights
 
 
-def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: list[str]) -> dataclass:
+def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: list[str], types_fields: dict[str, type] | None = None) -> dataclass:
     """
     Create a JAX-compatible dataclass with tree_flatten / tree_unflatten.
 
@@ -200,9 +200,11 @@ def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: l
     class_name : str
         Name of the class.
     dynamic_fields : list[str]
-        fields included in the pytree leaves
+        Fields included in the pytree leaves
     aux_fields : list[str]
-        fields stored in the pytree auxiliary data
+        Fields stored in the pytree auxiliary data
+    types_fields : dict[str, type], optional
+        Optional types for the fields. Missing types will be set to ``typing.Any``.
 
     Returns
     -------
@@ -210,7 +212,7 @@ def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: l
         A dataclass with required attributes and compatible with tree_flatten / tree_unflatten.
     """
     # Create dataclass fields with type=Any
-    fields = [(name, Any) for name in (dynamic_fields + aux_fields)]
+    fields = [(name, types_fields.get(name, Any)) for name in (dynamic_fields + aux_fields)]
 
     # Create the base dataclass type
     cls = make_dataclass(class_name, fields)
