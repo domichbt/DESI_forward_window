@@ -87,6 +87,8 @@ def get_window_spikes(
         How many spikes to run in parallel, by default 4.
     mock_survey_kw : dict, optional
         Additional keyword arguments for the ``mock_survey`` function, aside from ``theory`` and ``seed``.
+    unhashable: list[str] | None, optional
+        List of arguments in ``mock_survey_kw`` that are unhashable and should not be passed as ``static_argnames`` when JITting.
 
 
     Returns
