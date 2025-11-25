@@ -98,6 +98,7 @@ def get_window_spikes(
     """
     mock_survey_kw = mock_survey_kw or {}
     static_argnames = static_argnames or []
+    static_argnames = [*static_argnames, "mock_survey"]
 
     # Initialize a list of windows to fill later
     windows = [None for i in range(nreal)]
@@ -106,13 +107,11 @@ def get_window_spikes(
     observable = mock_survey(theory, seed=jax.random.key(42), **mock_survey_kw)
     observable = observable.clone(value=0.0 * observable.value())
     theory_zeros = jnp.zeros_like(theory.value())
-
     # JIT the function retrieving the window component
     get_window = jax.jit(
-        partial(get_window_component, fiducial_theory=theory),
+        get_window_component,
         static_argnames=static_argnames,
     )
-
     if seeds is None:
         seeds = [jax.random.key(2 * imock + 3) for imock in range(nreal)]
 
@@ -131,18 +130,18 @@ def get_window_spikes(
     return window, windows
 
 
-def get_window_component(injected_theory, fiducial_theory, mock_survey, **mock_survey_kw):
+def get_window_component(injected_theory, fiducial_theory, seed, mock_survey, **mock_survey_kw):
     """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
 
     # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles
     def get_response(input_value):
         # theory, observe -> global
-        response = mock_survey(fiducial_theory.clone(value=input_value), **mock_survey_kw)
+        response = mock_survey(theory=fiducial_theory.clone(value=input_value), seed=seed, **mock_survey_kw)
         return jnp.concatenate(response.value(concatenate=False)).real
 
     # Get the Jacobian of this, differentated wrt argument `input_value`, evaluated in fiducial_value, dot product with s
     def derivative(s):
         # fiducial_value -> global
-        return jax.jvp(get_response, primals=(fiducial_theory.value(),), tangents=(s,))[1]
+        return jax.jvp(get_response, primals=(jnp.concatenate(fiducial_theory.value(concatenate=False)),), tangents=(s,))[1]
 
     return jax.vmap(derivative)(injected_theory)
