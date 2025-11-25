@@ -1,6 +1,8 @@
 """Shared utility functions **for the internal libraries**."""
 
+from dataclasses import dataclass, make_dataclass
 from functools import partial
+from typing import Any
 
 import healpy as hp
 import jax
@@ -187,3 +189,53 @@ def get_clustering_positions_weights(*fns, **kwargs):
     dist = fiducial.comoving_radial_distance(z)
     positions = sky_to_cartesian(dist, ra, dec)
     return positions, weights
+
+
+def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: list[str]) -> dataclass:
+    """
+    Create a JAX-compatible dataclass with tree_flatten / tree_unflatten.
+
+    Parameters
+    ----------
+    class_name : str
+        Name of the class.
+    dynamic_fields : list[str]
+        fields included in the pytree leaves
+    aux_fields : list[str]
+        fields stored in the pytree auxiliary data
+
+    Returns
+    -------
+    dataclass
+        A dataclass with required attributes and compatible with tree_flatten / tree_unflatten.
+    """
+    # Create dataclass fields with type=Any
+    fields = [(name, Any) for name in (dynamic_fields + aux_fields)]
+
+    # Create the base dataclass type
+    cls = make_dataclass(class_name, fields)
+
+    def tree_flatten(self):
+        # leaves: only dynamic fields
+        leaves = [getattr(self, f) for f in dynamic_fields]
+        # aux: all auxiliary fields captured as a dict
+        aux = {f: getattr(self, f) for f in aux_fields}
+        return leaves, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, leaves):
+        # reconstruct all fields in correct order
+        kwargs = {}
+        # dynamic fields reconstructed from `leaves`
+        for f, v in zip(dynamic_fields, leaves, strict=True):
+            kwargs[f] = v
+        # aux fields restored directly from aux dict
+        for f in aux_fields:
+            kwargs[f] = aux[f]
+        return cls(**kwargs)
+
+    # attach methods
+    cls.tree_flatten = tree_flatten
+    cls.tree_unflatten = tree_unflatten
+
+    return jax.tree_util.register_pytree_node_class(cls)

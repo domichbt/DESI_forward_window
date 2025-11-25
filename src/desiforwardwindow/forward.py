@@ -16,10 +16,34 @@ from jaxpower import (
 )
 from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
 
-from .utils import bincount_2d
+from .utils import bincount_2d, make_jax_dataclass
+
+AICArgs = make_jax_dataclass(
+    class_name="AICArgs",
+    dynamic_fields=[
+        "data_templates_digitized",
+        "mask_extremes_in_data",
+        "data_templates_normalized",
+        "factor",
+        "constant",
+    ],
+    aux_fields=["n_bins"],
+)
+
+RICArgs = make_jax_dataclass(
+    class_name="RICArgs",
+    dynamic_fields=[
+        "data_distances_digitized",
+        "randoms_distances_binned",
+        "randoms_sum",
+    ],
+    aux_fields=["n_bins"],
+)
+
+NAMArgs = make_jax_dataclass(class_name="NAMArgs", dynamic_fields=["data_hpx", "randoms_hpx_binned", "randoms_sum"], aux_fields=["nside"])
 
 
-def _prepare_AIC(
+def prepare_AIC(
     data_weights: jnp.ndarray,
     randoms_weights: jnp.ndarray,
     # AIC specific data
@@ -29,7 +53,32 @@ def _prepare_AIC(
     tail: float = 0.5,
     bin_margin: float = 1e-7,
     n_bins: int = 10,
-) -> dict[str, jnp.ndarray]:
+) -> AICArgs:
+    """
+    Precompute all arguments necessary to :py:func:`get_AIC_weights` except for the ``data_weights``.
+
+    Parameters
+    ----------
+    data_weights : jnp.ndarray
+        Data weights.
+    randoms_weights : jnp.ndarray
+        Randoms weights.
+    template_values_data : jnp.ndarray
+        Values of the templates for the data.
+    template_values_randoms : jnp.ndarray
+        Values of the templates for the randoms.
+    tail : float, optional
+        Percentile of the (random's) template value distribution to remove, by default 0.5
+    bin_margin : float, optional
+        Margin on the side of edges, by default 1e-7
+    n_bins : int, optional
+        Number of bins for each template in the regression, by default 10
+
+    Returns
+    -------
+    AICArgs
+        Dataclass containing all information needed by ``get_AIC_weights`` except ``data.weights``.
+    """
     templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
 
@@ -99,85 +148,30 @@ def _prepare_AIC(
     data_templates_digitized = templates_digitized_d
     data_templates_normalized = templates_normalized_d
 
-    return {
-        "data_templates_digitized": data_templates_digitized,
-        "mask_extremes_in_data": mask_extremes_d,
-        "data_templates_normalized": data_templates_normalized,
-        "factor": factor,
-        "constant": constant,
-    }
-
-
-@partial(jax.jit, static_argnames=["n_bins"])
-def _get_AIC_weights(
-    data_weights: jnp.ndarray,
-    data_templates_digitized: jnp.ndarray,
-    mask_extremes_in_data: jnp.ndarray,
-    n_bins: int,
-    data_templates_normalized: jnp.ndarray,
-    factor: jnp.ndarray,
-    constant: jnp.ndarray,
-):
-    data_weights_binned = bincount_2d(
-        data_templates_digitized.T,
-        weights=data_weights * mask_extremes_in_data,
-        length=n_bins + 1,
-    )[:, 1:, ...]
-    p_opt = factor.dot(data_weights_binned.reshape((-1,))) - constant
-    return 1 / (1 + p_opt[0] + data_templates_normalized.dot(p_opt[1:]))
-
-
-def get_AIC_forward_model(
-    data_weights: jnp.ndarray,
-    randoms_weights: jnp.ndarray,
-    # AIC specific data
-    template_values_data: jnp.ndarray,
-    template_values_randoms: jnp.ndarray,
-    # AIC specific parameters
-    tail: float = 0.5,
-    bin_margin: float = 1e-7,
-    n_bins: int = 10,
-) -> Callable:
-    """
-    Build a jittable, differentiable ``get_AIC_weights`` function that takes in `data.weights` and returns AIC (photometric) weights.
-
-    Parameters
-    ----------
-    data_weights : jnp.ndarray
-        Data weights.
-    randoms_weights : jnp.ndarray
-        Randoms weights.
-    template_values_data : jnp.ndarray
-        Values of the templates for the data.
-    template_values_randoms : jnp.ndarray
-        Values of the templates for the randoms.
-    tail : float, optional
-        Percentile of the (random's) template value distribution to remove, by default 0.5
-    bin_margin : float, optional
-        Margin on the side of edges, by default 1e-7
-    n_bins : int, optional
-        Number of bins for each template in the regression, by default 10
-
-    Returns
-    -------
-    Callable
-        Jitted, differentiable ``get_AIC_weights`` function that takes in ``data.weights`` and returns AIC (photometric) weights.
-    """
-    fixed_args = _prepare_AIC(
-        data_weights=data_weights,
-        randoms_weights=randoms_weights,
-        # AIC specific data
-        template_values_data=template_values_data,
-        template_values_randoms=template_values_randoms,
-        # AIC specific parameters
-        tail=tail,
-        bin_margin=bin_margin,
+    return AICArgs(
+        data_templates_digitized=data_templates_digitized,
+        mask_extremes_in_data=mask_extremes_d,
+        data_templates_normalized=data_templates_normalized,
+        factor=factor,
+        constant=constant,
         n_bins=n_bins,
     )
-    return partial(_get_AIC_weights, n_bins=n_bins, **fixed_args)
 
 
-def _prepare_RIC(
+def get_AIC_weights(
+    data_weights: jnp.ndarray,
+    fixed_args: AICArgs,
+) -> jnp.ndarray:
+    data_weights_binned = bincount_2d(
+        fixed_args.data_templates_digitized.T,
+        weights=data_weights * fixed_args.mask_extremes_in_data,
+        length=fixed_args.n_bins + 1,
+    )[:, 1:, ...]
+    p_opt = fixed_args.factor.dot(data_weights_binned.reshape((-1,))) - fixed_args.constant
+    return 1 / (1 + p_opt[0] + fixed_args.data_templates_normalized.dot(p_opt[1:]))
+
+
+def prepare_RIC(
     data_positions: jnp.ndarray,
     randoms_positions: jnp.ndarray,
     randoms_weights: jnp.ndarray,
@@ -186,49 +180,8 @@ def _prepare_RIC(
     # RIC specific parameters
     n_bins: int,
 ):
-    dmin = jnp.min(boxcenter - boxsize / 2.0)
-    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
-    distance_edges = jnp.linspace(dmin, dmax, n_bins)
-    randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
-    randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)  # could be made faster with jnp.floor
-    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins + 1)[1:]
-
-    data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
-    data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)
-
-    randoms_sum = randoms_weights.sum()
-
-    return {
-        "data_distances_digitized": data_distances_digitized,
-        "randoms_distances_binned": randoms_distances_binned,
-        "randoms_sum": randoms_sum,
-    }
-
-
-@partial(jax.jit, static_argnames=["n_bins"])
-def _get_RIC_weights(
-    data_weights,
-    data_distances_digitized,
-    n_bins,
-    randoms_distances_binned,
-    randoms_sum,
-):
-    data_distances_binned = jnp.bincount(data_distances_digitized, weights=data_weights, length=n_bins + 1)[1:]
-    tmp = data_weights.sum() / randoms_sum * jnp.where(data_distances_binned == 0, 1.0, (randoms_distances_binned / data_distances_binned))
-    return tmp[data_distances_digitized - 1]
-
-
-def get_RIC_forward_model(
-    data_positions: jnp.ndarray,
-    randoms_positions: jnp.ndarray,
-    randoms_weights: jnp.ndarray,
-    boxcenter: jnp.ndarray,
-    boxsize: jnp.ndarray,
-    # RIC specific parameters
-    n_bins: int,
-) -> Callable:
     """
-    Build a jittable, differentiable ``get_RIC_weights`` function that takes in `data.weights` and returns RIC (forward model) weights.
+    Precompute all arguments necessary to :py:func:`get_RIC_weights` except for the ``data_weights``.
 
     Parameters
     ----------
@@ -242,33 +195,72 @@ def get_RIC_forward_model(
         Coordinates of the center of the box used for the power spectrum computation.
     boxsize : jnp.ndarray
         Sizes of the sides of the box used for the power spectrum computation.
-    n_bins_RIC : int
+    n_bins : int
         Number of distance bins to used.
 
     Returns
     -------
-    Callable
-        Jitted, differentiable ``get_RIC_weights`` function that takes in ``data.weights`` and returns RIC weights.
+    RICArgs
+        Dataclass containing all information needed by ``get_RIC_weights`` except ``data_weights``.
     """
-    fixed_args = _prepare_RIC(
-        data_positions=data_positions,
-        randoms_positions=randoms_positions,
-        randoms_weights=randoms_weights,
-        boxcenter=boxcenter,
-        boxsize=boxsize,
+    dmin = jnp.min(boxcenter - boxsize / 2.0)
+    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
+    distance_edges = jnp.linspace(dmin, dmax, n_bins)
+    randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
+    randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)  # could be made faster with jnp.floor
+    randoms_distances_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights, length=n_bins + 1)[1:]
+
+    data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
+    data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)
+
+    randoms_sum = randoms_weights.sum()
+
+    return RICArgs(
+        data_distances_digitized=data_distances_digitized,
+        randoms_distances_binned=randoms_distances_binned,
+        randoms_sum=randoms_sum,
         n_bins=n_bins,
     )
 
-    return partial(_get_RIC_weights, n_bins=n_bins, **fixed_args)
+
+def get_RIC_weights(
+    data_weights,
+    fixed_args: RICArgs,
+) -> jnp.ndarray:
+    data_distances_binned = jnp.bincount(fixed_args.data_distances_digitized, weights=data_weights, length=fixed_args.n_bins + 1)[1:]
+    tmp = (
+        data_weights.sum() / fixed_args.randoms_sum * jnp.where(data_distances_binned == 0, 1.0, (fixed_args.randoms_distances_binned / data_distances_binned))
+    )
+    return tmp[fixed_args.data_distances_digitized - 1]
 
 
-def _prepare_NAM(
+def prepare_NAM(
     data_positions: jnp.ndarray,
     randoms_positions: jnp.ndarray,
     randoms_weights: jnp.ndarray,
     # RIC specific parameters
     nside: int,
-):
+) -> NAMArgs:
+    """
+    Precompute all arguments necessary to :py:func:`get_NAM_weights` except for the ``data_weights``.
+
+    Parameters
+    ----------
+    data_positions : jnp.ndarray
+        2D array for data positions.
+    randoms_positions : jnp.ndarray
+        2D array for randoms positions.
+    randoms_weights : jnp.ndarray
+        1D array of the random's weights.
+    nside : int
+        Resolution for the pixel binning (power of two).
+
+    Returns
+    -------
+    NAMArgs
+        Dataclass containing all information needed by ``get_RIC_weights`` except ``data_weights``.
+    """
+
     def _vec2pix(positions):
         import healpy as hp
 
@@ -292,69 +284,28 @@ def _prepare_NAM(
 
     randoms_sum = randoms_weights.sum()  # is that not just randoms_hpx_binned.sum() ?
 
-    return {
-        "data_hpx": data_hpx,
-        "nside": nside,
-        "randoms_hpx_binned": randoms_hpx_binned,
-        "randoms_sum": randoms_sum,
-    }
+    return NAMArgs(
+        data_hpx=data_hpx,
+        nside=nside,
+        randoms_hpx_binned=randoms_hpx_binned,
+        randoms_sum=randoms_sum,
+    )
 
 
-@partial(jax.jit, static_argnames=["nside"])
-def _get_NAM_weights(
+def get_NAM_weights(
     data_weights,
-    data_hpx,
-    nside,
-    randoms_hpx_binned,
-    randoms_sum,
-):
-    data_hpx_binned = jnp.bincount(data_hpx, weights=data_weights, length=12 * nside**2)
+    fixed_args: NAMArgs,
+) -> jnp.ndarray:
+    data_hpx_binned = jnp.bincount(fixed_args.data_hpx, weights=data_weights, length=12 * fixed_args.nside**2)
     return (
         data_weights.sum()
-        / randoms_sum
+        / fixed_args.randoms_sum
         * jnp.where(
             data_hpx_binned == 0,
             1.0,
-            (randoms_hpx_binned / data_hpx_binned),
-        )[data_hpx]
+            (fixed_args.randoms_hpx_binned / data_hpx_binned),
+        )[fixed_args.data_hpx]
     )
-
-
-def get_NAM_forward_model(
-    data_positions: jnp.ndarray,
-    randoms_positions: jnp.ndarray,
-    randoms_weights: jnp.ndarray,
-    # NAM specific parameters
-    nside: int,
-) -> Callable:
-    """
-    Build a jittable, differentiable ``get_NAM_weights`` function that takes in `data.weights` and returns RIC (forward model) weights.
-
-    Parameters
-    ----------
-    data_positions : jnp.ndarray
-        2D array for data positions.
-    randoms_positions : jnp.ndarray
-        2D array for randoms positions.
-    randoms_weights : jnp.ndarray
-        1D array of the random's weights.
-    nside : int
-        Resolution for the pixel binning (power of two).
-
-    Returns
-    -------
-    Callable
-        Jittable, differentiable ``get_NAM_weights`` function that takes in ``data.weights`` and returns NAM weights.
-    """
-    fixed_args = _prepare_NAM(
-        data_positions=data_positions,
-        randoms_positions=randoms_positions,
-        randoms_weights=randoms_weights,
-        nside=nside,
-    )
-
-    get_NAM_weights = partial(_get_NAM_weights, **fixed_args)  # Can fix everything but data_weights
-    return get_NAM_weights
 
 
 def mock_survey(
@@ -365,9 +316,9 @@ def mock_survey(
     unitary_amplitude: bool,
     # Data catalog and effects
     data: ParticleField,
-    get_RIC_weights: Callable | None,
-    get_AIC_weights: Callable | None,
-    get_NAM_weights: Callable | None,
+    RIC_args: RICArgs | None,
+    AIC_args: AICArgs | None,
+    NAM_args: NAMArgs | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     randoms_mesh: RealMeshField,
@@ -389,12 +340,12 @@ def mock_survey(
         If ``True``, normalize the mock's amplitude to be unitary.
     data : ParticleField
         "Data" particles (randomly distributed positions), on which to paint the mock's fluctuation. This is where the geometry is contained.
-    get_RIC_weights : Callable | None, Optional
-        Optional function taking in ``data.weights``-like arguments and returning weights to apply the radial integral constraint. See :py:func:`get_RIC_forward_model`.
-    get_AIC_weights : Callable | None
-        Optional function taking in ``data.weights``-like arguments and returning weights to apply the angular integral constraint. See :py:func:`get_AIC_forward_model`.
-    get_NAM_weights : Callable | None
-        Optional function taking in ``data.weights``-like arguments and returning weights to apply the NAM procedure. See :py:func:`get_NAM_forward_model`.
+    RIC_args : RICArgs | None
+        Fixed precomputed arguments for :py:func:`get_RIC_weights`; see :py:func:`prepare_RIC`. Set to ``None`` to not apply RIC.
+    AIC_args : AICArgs | None
+        Fixed precomputed arguments for :py:func:`get_AIC_weights`; see :py:func:`prepare_AIC`. Set to ``None`` to not apply AIC.
+    NAM_args : NAMArgs | None
+        Fixed precomputed arguments for :py:func:`get_NAM_weights`; see :py:func:`prepare_NAM`. Set to ``None`` to not apply NAM.
     binner : BinMesh2SpectrumPoles
         Binning operator to compute the output power spectrum.
     randoms_mesh : RealMeshField
@@ -426,16 +377,16 @@ def mock_survey(
     data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True) + 1))
     del mesh
     # Apply RIC if necessary
-    if get_RIC_weights is not None:
-        RIC_weights = get_RIC_weights(data_field.weights)
+    if RIC_args is not None:
+        RIC_weights = get_RIC_weights(data_field.weights, RIC_args)
         data_field = data_field.clone(weights=data_field.weights * RIC_weights)
     # Apply AIC if necessary
-    if get_AIC_weights is not None:
-        AIC_weights = get_AIC_weights(data_field.weights)
+    if AIC_args is not None:
+        AIC_weights = get_AIC_weights(data_field.weights, AIC_args)
         data_field = data_field.clone(weights=data_field.weights * AIC_weights)
     # Apply AIC if necessary
-    if get_NAM_weights is not None:
-        NAM_weights = get_NAM_weights(data_field.weights)
+    if NAM_args is not None:
+        NAM_weights = get_NAM_weights(data_field.weights, NAM_args)
         data_field = data_field.clone(weights=data_field.weights * NAM_weights)
     # Paint to mesh for P(k) computation and build FKP mesh
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
@@ -457,8 +408,9 @@ def mock_survey_diff(
     unitary_amplitude: bool,
     # Data catalog and effects
     data: ParticleField,
-    get_RIC_weights: Callable | None,
-    get_AIC_weights: Callable | None,
+    RIC_args: RICArgs | None,
+    AIC_args: AICArgs | None,
+    NAM_args: NAMArgs | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     randoms_mesh: RealMeshField,
@@ -482,10 +434,12 @@ def mock_survey_diff(
         If ``True``, normalize the mock's amplitude to be unitary.
     data : ParticleField
         "Data" particles (randomly distributed positions), on which to paint the mock's fluctuation. This is where the geometry is contained.
-    get_RIC_weights : Callable | None, Optional
-        Optional function taking in ``data.weights``-like arguments and returning weights to apply the radial integral constraint. See :py:func:`get_RIC_forward_model`.
-    get_AIC_weights : Callable | None
-        Optional function taking in ``data.weights``-like arguments and returning weights to apply the angular integral constraint. See :py:func:`get_AIC_forward_model`.
+    RIC_args : RICArgs | None
+        Fixed precomputed arguments for :py:func:`get_RIC_weights`; see :py:func:`prepare_RIC`. Set to ``None`` to not apply RIC.
+    AIC_args : AICArgs | None
+        Fixed precomputed arguments for :py:func:`get_AIC_weights`; see :py:func:`prepare_AIC`. Set to ``None`` to not apply AIC.
+    NAM_args : NAMArgs | None
+        Fixed precomputed arguments for :py:func:`get_NAM_weights`; see :py:func:`prepare_NAM`. Set to ``None`` to not apply NAM.
     binner : BinMesh2SpectrumPoles
         Binning operator to compute the output power spectrum.
     randoms_mesh : RealMeshField
@@ -520,13 +474,17 @@ def mock_survey_diff(
     # Paint data mesh on the portion of randoms designated as "data" -> data catalog w/ geometry
     data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True) + 1))
     # Apply RIC if necessary
-    if get_RIC_weights is not None:
-        RIC_weights = get_RIC_weights(data_field.weights)
+    if RIC_args is not None:
+        RIC_weights = get_RIC_weights(data_field.weights, RIC_args)
         data_field = data_field.clone(weights=data_field.weights * RIC_weights)
     # Apply AIC if necessary
-    if get_AIC_weights is not None:
-        AIC_weights = get_AIC_weights(data_field.weights)
+    if AIC_args is not None:
+        AIC_weights = get_AIC_weights(data_field.weights, AIC_args)
         data_field = data_field.clone(weights=data_field.weights * AIC_weights)
+    # Apply AIC if necessary
+    if NAM_args is not None:
+        NAM_weights = get_NAM_weights(data_field.weights, NAM_args)
+        data_field = data_field.clone(weights=data_field.weights * NAM_weights)
     # Paint to mesh for P(k) computation and build FKP mesh
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()
