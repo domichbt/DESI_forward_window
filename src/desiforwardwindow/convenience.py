@@ -17,6 +17,7 @@ def get_randoms(
     tracer: Literal["QSO", "LRG", "BGS", "ELG", "ELG_LOPnotqso", "ELG_notqso"],
     weight_type: str | None = "default",
     basedir: os.PathLike = Path("/dvs_ro/cfs/cdirs/desi/survey/catalogs/Y3/LSS/loa-v1/LSScats/v2/fNL/"),
+    i_random_min: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Get the DESI randoms' positions and weights needed to paint the geometry mesh. By default, Y3 randoms are loaded.
@@ -45,7 +46,7 @@ def get_randoms(
     -----
     One can easily get mesh attributes from :py:fun:`jaxpower.get_mesh_attrs` after this, and paint a ParticleField.
     """
-    filenames = [basedir / f"{tracer}_{region}_{i}_clustering.ran.fits" for i in range(n_randoms)]
+    filenames = [basedir / f"{tracer}_{region}_{i}_clustering.ran.fits" for i in range(i_random_min, i_random_min + n_randoms)]
     positions, weights = get_clustering_positions_weights(filenames, kind="randoms", region=region, zrange=zrange, weight_type=weight_type)
     if weight_type is None:
         weights = [np.ones_like(weights[0])]
