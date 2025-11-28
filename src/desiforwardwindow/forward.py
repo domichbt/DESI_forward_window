@@ -494,9 +494,9 @@ def mock_survey_diff(
         unitary_amplitude=unitary_amplitude,
     )
     # For the geometry-only observation, no need to go to catalog: compute directly on the mesh
-    mesh_geo = mesh * randoms_mesh
-    norm = compute_normalization(randoms_mesh, randoms_mesh, bin=binner)
-    pk_geo = compute_mesh2_spectrum(mesh_geo, bin=binner, los=los).clone(norm=norm)
+    alpha = data.weights.sum() / randoms_mesh.sum()
+    mesh_geo = mesh * alpha * randoms_mesh
+    pk_geo = compute_mesh2_spectrum(mesh_geo, bin=binner, los=los).clone(norm=fkp_norm)
     # Paint data mesh on the portion of randoms designated as "data" -> data catalog w/ geometry
     data_field = data.clone(weights=data.weights * (mesh.read(data.positions, resampler="cic", compensate=True) + 1))
     # Apply RIC if necessary
@@ -515,7 +515,7 @@ def mock_survey_diff(
     data_mesh = data_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     alpha = data_mesh.sum() / randoms_mesh.sum()
     fkp_mesh = data_mesh - alpha * randoms_mesh
-    shotnoise = jnp.sum(data.weights**2) + alpha**2 * randoms_shotnoise
+    shotnoise = jnp.sum(data_field.weights**2) + alpha**2 * randoms_shotnoise
     pk_IC = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
     pk_IC = pk_IC.clone(
         norm=fkp_norm,
