@@ -1,6 +1,8 @@
 """Window computations."""
 
+import os
 from collections.abc import Callable
+from pathlib import Path
 from functools import partial
 from typing import Literal
 
@@ -63,10 +65,11 @@ def get_window_spikes(
     mock_survey: Callable,
     theory: Mesh2SpectrumPoles,
     nreal: int = 10,
-    seeds: list[jnp.ndarray] | None = None,
+    seeds: list[int] | None = None,
     batch_size: int = 1,
     mock_survey_kw: dict | None = None,
     static_argnames: list[str] | None = None,
+    tmpdir: str | os.PathLike | None = None,
 ):
     """
     Estimate the response (window matrix component) of a given observation forward modelling ``mock_survey`` for some fiducial theory input ``theory``.
@@ -81,15 +84,16 @@ def get_window_spikes(
         Fiducial theoretical power spectrum for the Jacobian estimation.
     nreal : int, optional
         Number of realizations for the average computation, by default 10
-    seeds : list[jnp.ndarray] | None, optional
-        Individual random keys for the `nreal` realizations. If ``None``, defaults to ``2 * i + 3``.
+    seeds : list[int] | None, optional
+        Individual random integer seeds for the `nreal` realizations. If ``None``, defaults to ``2 * i + 3``.
     batch_size : int, optional
         How many spikes to run in parallel, by default 4.
     mock_survey_kw : dict, optional
         Additional keyword arguments for the ``mock_survey`` function, aside from ``theory`` and ``seed``.
     static_argnames: list[str] | None, optional
         List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
-
+    tmpdir: str | os.PathLike
+        Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
 
     Returns
     -------
@@ -99,6 +103,8 @@ def get_window_spikes(
     mock_survey_kw = mock_survey_kw or {}
     static_argnames = static_argnames or []
     static_argnames = [*static_argnames, "mock_survey"]
+    if tmpdir is not None:
+        tmpdir = Path(tmpdir)
 
     # Initialize a list of windows to fill later
     windows = [None for i in range(nreal)]
@@ -113,19 +119,22 @@ def get_window_spikes(
         static_argnames=static_argnames,
     )
     if seeds is None:
-        seeds = [jax.random.key(2 * imock + 3) for imock in range(nreal)]
+        seeds = [2 * imock + 3 for imock in range(nreal)]
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
-    for isplit in tqdm(range(nsplits)):
-        islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
-        spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-        for imock in range(nreal):
-            spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seeds[imock], mock_survey=mock_survey, **mock_survey_kw).T
+    for imock in range(nreal):
+        seed = jax.random.key(seeds[imock])
+        for isplit in tqdm(range(nsplits)):
+            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
+            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
+            spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_survey=mock_survey, **mock_survey_kw).T
             if windows[imock] is None:
                 windows[imock] = np.zeros((spectrum.shape[0], theory.size))
             windows[imock][..., slice(*islice)] = spectrum
-    windows = [WindowMatrix(value=window, theory=theory, observable=observable) for window in windows]
+        windows[imock] = WindowMatrix(value=windows[imock], theory=theory, observable=observable)
+        if (tmpdir is not None) and jax.process_index() == 0:
+            windows[imock].write(tmpdir / f"{seed:010d}.h5")
     window = WindowMatrix(value=np.mean([window.value() for window in windows], axis=0), theory=theory, observable=observable)
     return window, windows
 
