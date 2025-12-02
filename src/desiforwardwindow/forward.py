@@ -8,9 +8,11 @@ from jaxpower import (
     BinMesh2SpectrumPoles,
     ParticleField,
     RealMeshField,
+    FKPField,
     compute_mesh2_spectrum,
     compute_normalization,
     generate_anisotropic_gaussian_mesh,
+    compute_fkp2_shotnoise,
 )
 from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
 
@@ -49,6 +51,40 @@ RICArgs = make_jax_dataclass(
         "randoms_distances_binned": jnp.ndarray,
         "randoms_sum": jnp.ndarray,
         "n_bins": int,
+    },
+)
+
+RICArgsFKP = make_jax_dataclass(
+    class_name="RICArgsFKP",
+    dynamic_fields=[
+        "data_distances_digitized",
+        "data_to_remove",
+        "randoms_weights_binned",
+    ],
+    aux_fields=["n_bins"],
+    types_fields={
+        "data_distances_digitized": jnp.ndarray,
+        "data_to_remove": jnp.ndarray,
+        "randoms_weights_binned": jnp.ndarray,
+        "n_bins": int,
+    },
+)
+
+NAMArgsFKP = make_jax_dataclass(
+    class_name="AICArgsFKP",
+    dynamic_fields=[
+        "data_pixels",
+        "randoms_pixels",
+        "data_to_remove",
+        "randoms_weights_binned",
+    ],
+    aux_fields=["nside"],
+    types_fields={
+        "data_pixels": jnp.ndarray,
+        "randoms_pixels": jnp.ndarray,
+        "data_to_remove": jnp.ndarray,
+        "randoms_weights_binned": jnp.ndarray,
+        "nside": int,
     },
 )
 
@@ -249,6 +285,54 @@ def prepare_RIC(
     )
 
 
+def prepare_RIC_FKP(
+    fkp_field: FKPField,
+    boxcenter: jnp.ndarray,
+    boxsize: jnp.ndarray,
+    # RIC specific parameters
+    n_bins: int,
+) -> RICArgsFKP:
+    """
+    Precompute all arguments necessary to :py:func:`mock_survey_FKP``.
+
+    Parameters
+    ----------
+    fkp_field : ParticleField
+        Field containing positions and weights of all the particles.
+    boxcenter : jnp.ndarray
+        Coordinates of the center of the box used for the power spectrum computation.
+    boxsize : jnp.ndarray
+        Sizes of the sides of the box used for the power spectrum computation.
+    n_bins : int
+        Number of distance bins to used.
+
+    Returns
+    -------
+    RICArgsFKP
+        Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply RIC.
+    """
+    dmin = jnp.min(boxcenter - boxsize / 2.0)
+    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
+    distance_edges = jnp.linspace(dmin, dmax, n_bins)
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
+    randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
+
+    randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=fkp_field.randoms.weights, length=n_bins + 1)[1:]
+
+    data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
+    randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
+    data_to_remove = (data_distances_counts != 0) * (randoms_distances_counts == 0)
+
+    return RICArgsFKP(
+        data_distances_digitized=data_distances_digitized,
+        randoms_weights_binned=randoms_weights_binned,
+        data_to_remove=data_to_remove[data_distances_digitized - 1],
+        n_bins=n_bins,
+    )
+
+
 def get_RIC_weights(
     data_weights,
     fixed_args: RICArgs,
@@ -315,6 +399,61 @@ def prepare_NAM(
         nside=nside,
         randoms_hpx_binned=randoms_hpx_binned,
         randoms_sum=randoms_sum,
+    )
+
+
+def prepare_NAM_FKP(
+    fkp_field: FKPField,
+    # RIC specific parameters
+    nside: int,
+) -> NAMArgsFKP:
+    """
+    Precompute all arguments necessary to :py:func:`mock_survey_FKP`.
+
+    Parameters
+    ----------
+    fkp_field : FKPField
+        Field containing positions and weights of all the particles.
+    nside : int
+        Resolution for the pixel binning (power of two).
+
+    Returns
+    -------
+    NAMArgsFKP
+        Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply NAM/AIC.
+    """
+
+    def _vec2pix(positions):
+        import healpy as hp
+
+        return hp.vec2pix(nside, *positions.T)
+
+    def vec2pix(positions):
+        return jax.pure_callback(_vec2pix, jax.ShapeDtypeStruct(positions.shape[:1], jnp.int64), positions)
+
+    from jax.experimental.shard_map import shard_map
+    from jax.sharding import PartitionSpec as P
+    from jaxpower.mesh import get_sharding_mesh
+
+    sharding_mesh = get_sharding_mesh()
+
+    if sharding_mesh.axis_names:
+        vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+
+    data_pixels = vec2pix(fkp_field.data.positions)
+    randoms_pixels = vec2pix(fkp_field.randoms.positions)
+    randoms_weights_binned = jnp.bincount(randoms_pixels, weights=fkp_field.randoms.weights, length=12 * nside**2)
+
+    data_pixels_counts = jnp.bincount(data_pixels, weights=None, length=12 * nside**2)
+    randoms_pixels_counts = jnp.bincount(randoms_pixels, weights=None, length=12 * nside**2)
+    data_but_no_randoms = (data_pixels_counts != 0) * (randoms_pixels_counts == 0)
+
+    return NAMArgsFKP(
+        data_pixels=data_pixels,
+        randoms_pixels=randoms_pixels,
+        data_to_remove=data_but_no_randoms[data_pixels],
+        randoms_weights_binned=randoms_weights_binned,
+        nside=nside,
     )
 
 
@@ -423,6 +562,65 @@ def mock_survey(
     return pk.clone(
         norm=fkp_norm,
         num_shotnoise=[shotnoise * (ell == 0) * jnp.ones_like(binner.edges[..., 0]) for ell in binner.ells],
+    )
+
+
+def mock_survey_FKP(
+    # Gaussian mock generation
+    theory: ObservableTree,
+    seed: jnp.ndarray,
+    los: Literal["local", "x", "y", "z"],
+    unitary_amplitude: bool,
+    # Data catalog and effects
+    fkp_field: FKPField,
+    ric_args: RICArgsFKP | None,
+    nam_args: NAMArgsFKP | None,
+    # Final P(k) estimation
+    binner: BinMesh2SpectrumPoles,
+    fkp_norm: jnp.ndarray,
+) -> Mesh2SpectrumPoles:
+    # Generate a gaussian mesh mock with exact required theory P(k)
+    mattrs = fkp_field.attrs
+    mesh = generate_anisotropic_gaussian_mesh(
+        mattrs,
+        poles=theory,
+        seed=seed,
+        los=los,
+        unitary_amplitude=unitary_amplitude,
+    )
+    # Paint it on the catalog -> catalog with geometry and ""clustering""
+    data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
+    randoms = fkp_field.randoms
+    del mesh
+    # Apply RIC if necessary
+    if ric_args is not None:
+        alpha = data.weights.sum() / randoms.weights.sum()
+        data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights, length=ric_args.n_bins + 1)[1:]
+        ric_weights_binned = jnp.where(
+            data_weights_binned == 0,
+            0.0,  # don't care, will never be applied
+            (alpha * ric_args.randoms_weights_binned / data_weights_binned),
+        )
+        data = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+    # Apply NAM if necessary
+    if nam_args is not None:
+        alpha = data.weights.sum() / randoms.weights.sum()
+        data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=data.weights, length=12 * nam_args.nside**2)
+        nam_weights_binned = jnp.where(
+            nam_args.randoms_weights_binned == 0,
+            0.0,  # don't care, will never be applied
+            data_weights_binned / (alpha * nam_args.randoms_weights_binned),
+        )
+        randoms = randoms.clone(weights=randoms.weights * nam_weights_binned[nam_args.randoms_pixels])
+    # Paint to mesh for P(k) computation and build FKP mesh
+    fkp_field = fkp_field.clone(data=data, randoms=randoms)
+    num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
+    fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
+    del fkp_field
+    pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
+    return pk.clone(
+        norm=fkp_norm,
+        num_shotnoise=num_shotnoise,
     )
 
 
