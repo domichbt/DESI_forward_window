@@ -58,13 +58,13 @@ RICArgsFKP = make_jax_dataclass(
     class_name="RICArgsFKP",
     dynamic_fields=[
         "data_distances_digitized",
-        "data_distances_counts",
+        "data_to_remove",
         "randoms_weights_binned",
     ],
     aux_fields=["n_bins"],
     types_fields={
         "data_distances_digitized": jnp.ndarray,
-        "data_distances_counts": jnp.ndarray,
+        "data_to_remove": jnp.ndarray,
         "randoms_weights_binned": jnp.ndarray,
         "n_bins": int,
     },
@@ -74,13 +74,15 @@ NAMArgsFKP = make_jax_dataclass(
     class_name="AICArgsFKP",
     dynamic_fields=[
         "data_pixels",
-        "data_pixels_counts",
+        "randoms_pixels",
+        "data_to_remove",
         "randoms_weights_binned",
     ],
     aux_fields=["nside"],
     types_fields={
-        "pixels": jnp.ndarray,
-        "pixels_counts": jnp.ndarray,
+        "data_pixels": jnp.ndarray,
+        "randoms_pixels": jnp.ndarray,
+        "data_to_remove": jnp.ndarray,
         "randoms_weights_binned": jnp.ndarray,
         "nside": int,
     },
@@ -317,13 +319,16 @@ def prepare_RIC_FKP(
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
 
-    data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
     randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=fkp_field.randoms.weights, length=n_bins + 1)[1:]
+
+    data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
+    randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
+    data_to_remove = (data_distances_counts != 0) * (randoms_distances_counts == 0)
 
     return RICArgsFKP(
         data_distances_digitized=data_distances_digitized,
-        data_distances_counts=data_distances_counts,
         randoms_weights_binned=randoms_weights_binned,
+        data_to_remove=data_to_remove[data_distances_digitized - 1],
         n_bins=n_bins,
     )
 
@@ -437,12 +442,16 @@ def prepare_NAM_FKP(
 
     data_pixels = vec2pix(fkp_field.data.positions)
     randoms_pixels = vec2pix(fkp_field.randoms.positions)
-    data_pixels_counts = jnp.bincount(data_pixels, weights=None, length=12 * nside**2)
     randoms_weights_binned = jnp.bincount(randoms_pixels, weights=fkp_field.randoms.weights, length=12 * nside**2)
+
+    data_pixels_counts = jnp.bincount(data_pixels, weights=None, length=12 * nside**2)
+    randoms_pixels_counts = jnp.bincount(randoms_pixels, weights=None, length=12 * nside**2)
+    data_but_no_randoms = (data_pixels_counts != 0) * (randoms_pixels_counts == 0)
 
     return NAMArgsFKP(
         data_pixels=data_pixels,
-        data_pixels_counts=data_pixels_counts,
+        randoms_pixels=randoms_pixels,
+        data_to_remove=data_but_no_randoms[data_pixels],
         randoms_weights_binned=randoms_weights_binned,
         nside=nside,
     )
@@ -584,30 +593,27 @@ def mock_survey_FKP(
     randoms = fkp_field.randoms
     del mesh
     # Apply RIC if necessary
-    weights = data.weights * 0.0
     if ric_args is not None:
         alpha = data.weights.sum() / randoms.weights.sum()
         data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights, length=ric_args.n_bins + 1)[1:]
         ric_weights_binned = jnp.where(
-            ric_args.data_distances_counts == 0,
-            1.0,
-            ((data_weights_binned - alpha * ric_args.randoms_weights_binned) / ric_args.data_distances_counts),
+            data_weights_binned == 0,
+            0.0,  # don't care, will never be applied
+            (alpha * ric_args.randoms_weights_binned / data_weights_binned),
         )
-        weights -= ric_weights_binned[ric_args.data_distances_digitized - 1]
-    # Apply AIC if necessary
+        data = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+    # Apply NAM if necessary
     if nam_args is not None:
-        alpha = (data.weights - weights).sum() / randoms.weights.sum()
-        data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=(data.weights - weights), length=12 * nam_args.nside**2)
+        alpha = data.weights.sum() / randoms.weights.sum()
+        data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=data.weights, length=12 * nam_args.nside**2)
         nam_weights_binned = jnp.where(
-            nam_args.data_pixels_counts == 0,
-            1.0,
-            ((data_weights_binned - alpha * nam_args.randoms_weights_binned) / nam_args.data_pixels_counts),
+            nam_args.randoms_weights_binned == 0,
+            0.0,  # don't care, will never be applied
+            data_weights_binned / (alpha * nam_args.randoms_weights_binned),
         )
-        weights -= nam_weights_binned[nam_args.data_pixels]
+        randoms = randoms.clone(weights=randoms.weights * nam_weights_binned[nam_args.randoms_pixels])
     # Paint to mesh for P(k) computation and build FKP mesh
-    data = data.clone(weights=data.weights - weights)
-    # fkp_field = fkp_field.clone(data=data)
-    fkp_field = FKPField(data=data, randoms=randoms, attrs=fkp_field.attrs)
+    fkp_field = fkp_field.clone(data=data, randoms=randoms)
     num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
     fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
     del fkp_field
