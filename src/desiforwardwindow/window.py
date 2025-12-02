@@ -123,9 +123,9 @@ def get_window_spikes(
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
-    for imock in range(nreal):
+    for imock in tqdm(range(nreal)):
         seed = jax.random.key(seeds[imock])
-        for isplit in tqdm(range(nsplits)):
+        for isplit in range(nsplits):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
             spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_survey=mock_survey, **mock_survey_kw).T
@@ -134,7 +134,7 @@ def get_window_spikes(
             windows[imock][..., slice(*islice)] = spectrum
         windows[imock] = WindowMatrix(value=windows[imock], theory=theory, observable=observable)
         if (tmpdir is not None) and jax.process_index() == 0:
-            windows[imock].write(tmpdir / f"{seed:010d}.h5")
+            windows[imock].write(tmpdir / f"{seeds[imock]:010d}.h5")
     window = WindowMatrix(value=np.mean([window.value() for window in windows], axis=0), theory=theory, observable=observable)
     return window, windows
 
