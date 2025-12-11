@@ -139,6 +139,113 @@ def get_window_spikes(
     return window, windows
 
 
+def get_windows_spikes(
+    mock_surveys: Callable,
+    theory: Mesh2SpectrumPoles,
+    nreal: int = 10,
+    seeds: list[int] | None = None,
+    batch_size: int = 1,
+    mock_surveys_kw: dict | None = None,
+    static_argnames: list[str] | None = None,
+    tmpdir: str | os.PathLike | None = None,
+    survey_names: list[str] | None = None,
+):
+    """
+    Estimate the response (window matrix component) of a given set of observation forward modellings ``mock_surveys`` for some fiducial theory input ``theory``.
+
+    The estimation is done by injecting individual spikes of the theory power spectrum in mocks, forward modeling the selection effects and taking the derivative of the response at fiducial ``theory``.
+
+    Compared to :py:fun:`get_window_spikes` (notice the lack of `s`), this is designed to get lots of power spectra corresponding to the same mesh but to different observational effects. This way, one can easily apply a control variate on the more complex modellings.
+
+    Parameters
+    ----------
+    mock_surveys : Callable
+        Selections to be forward modeled on ``theory``. Signature should be ``observe(theory, seed, **kwargs) -> list[Mesh2SpectrumPoles]``. Must support jax forward differentation and be jittable.
+    theory : lsstypes.BinMesh2SpectrumPoles
+        Fiducial theoretical power spectrum for the Jacobian estimation.
+    nreal : int, optional
+        Number of realizations for the average computation, by default 10
+    seeds : list[int] | None, optional
+        Individual random integer seeds for the `nreal` realizations. If ``None``, defaults to ``2 * i + 3``.
+    batch_size : int, optional
+        How many spikes to run in parallel, by default 4.
+    mock_surveys_kw : dict, optional
+        Additional keyword arguments for the ``mock_surveys`` function, aside from ``theory`` and ``seed``.
+    static_argnames: list[str] | None, optional
+        List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
+    tmpdir: str | os.PathLike | None
+        Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
+    name_surveys: list[str] | None
+        Name of the subdirectories for each survey of ``mock_surveys``.
+
+    Returns
+    -------
+    tuple[list[lsstypes.WindowMatrix], list[list[lsstypes.WindowMatrix]]]
+        The average window matrices over ``nreal`` realizations (for each set of observationnal effects) and the individual realizations (shape (nreal, nsurveys)).
+    """
+    mock_surveys_kw = mock_surveys_kw or {}
+    static_argnames = static_argnames or []
+    static_argnames = [*static_argnames, "mock_surveys"]
+    if tmpdir is not None:
+        tmpdir = Path(tmpdir)
+
+    # Get some empty theory and observable to use their shapes when creating the window matrix
+    observables = mock_surveys(theory, seed=jax.random.key(42), **mock_surveys_kw)
+    nsurveys = len(observables)
+    observable = observables[0].clone(value=0.0 * observables[0].value())
+    theory_zeros = jnp.zeros_like(theory.value())
+    # JIT the function retrieving the window component
+    get_windows = jax.jit(
+        get_windows_component,
+        static_argnames=static_argnames,
+    )
+    if seeds is None:
+        seeds = [2 * imock + 3 for imock in range(nreal)]
+
+    # Initialize a list of windows to fill later
+    windows = [[None for j in range(nsurveys)] for i in range(nreal)]
+
+    # Given batch size, how many loops do we run?
+    nsplits = (theory.size + batch_size - 1) // batch_size
+    for imock in tqdm(range(nreal)):
+        seed = jax.random.key(seeds[imock])
+        for isplit in range(nsplits):
+            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
+            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
+            spectra = [wd.T for wd in get_windows(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_surveys, **mock_surveys_kw)]
+            for isurvey in range(nsurveys):
+                if windows[imock][isurvey] is None:
+                    windows[imock][isurvey] = np.zeros((spectra[isurvey].shape[0], theory.size))
+                windows[imock][isurvey][..., slice(*islice)] = spectra[isurvey]
+        for isurvey in range(nsurveys):
+            windows[imock][isurvey] = WindowMatrix(value=windows[imock][isurvey], theory=theory, observable=observable)
+        if (tmpdir is not None) and jax.process_index() == 0:
+            for isurvey in range(nsurveys):
+                windows[imock][isurvey].write(tmpdir / survey_names[isurvey] / f"{seeds[imock]:010d}.h5")
+    windows_avg = [
+        WindowMatrix(value=np.mean([windows[imock][isurvey].value() for imock in range(nreal)], axis=0), theory=theory, observable=observable)
+        for isurvey in range(nsurveys)
+    ]
+    return windows_avg, windows
+
+
+def get_windows_component(injected_theory, fiducial_theory, seed, mock_surveys, **mock_surveys_kw):
+    """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
+
+    # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles
+    def get_responses(input_value):
+        # theory, observe -> global
+        responses = mock_surveys(theory=fiducial_theory.clone(value=input_value), seed=seed, **mock_surveys_kw)
+        return [jnp.concatenate(response.value(concatenate=False)).real for response in responses]
+
+    # Get the Jacobian of this, differentated wrt argument `input_value`, evaluated in fiducial_value, dot product with s
+    def derivative(s):
+        # fiducial_value -> global
+        return jax.jvp(get_responses, primals=(jnp.concatenate(fiducial_theory.value(concatenate=False)),), tangents=(s,))[1]
+
+    return jax.vmap(derivative)(injected_theory)
+
+
 def get_window_component(injected_theory, fiducial_theory, seed, mock_survey, **mock_survey_kw):
     """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
 

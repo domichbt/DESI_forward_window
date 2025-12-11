@@ -6,13 +6,12 @@ import jax
 import jax.numpy as jnp
 from jaxpower import (
     BinMesh2SpectrumPoles,
+    FKPField,
     ParticleField,
     RealMeshField,
-    FKPField,
-    compute_mesh2_spectrum,
-    compute_normalization,
-    generate_anisotropic_gaussian_mesh,
     compute_fkp2_shotnoise,
+    compute_mesh2_spectrum,
+    generate_anisotropic_gaussian_mesh,
 )
 from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
 
@@ -622,6 +621,71 @@ def mock_survey_FKP(
         norm=fkp_norm,
         num_shotnoise=num_shotnoise,
     )
+
+
+def mock_surveys_FKP(
+    # Gaussian mock generation
+    theory: ObservableTree,
+    seed: jnp.ndarray,
+    los: Literal["local", "x", "y", "z"],
+    unitary_amplitude: bool,
+    # Data catalog and effects
+    fkp_field: FKPField,
+    combinations: list[tuple[RICArgsFKP | None, NAMArgsFKP | None]],
+    # Final P(k) estimation
+    binner: BinMesh2SpectrumPoles,
+    fkp_norm: jnp.ndarray,
+) -> list[Mesh2SpectrumPoles]:
+    # Generate a gaussian mesh mock with exact required theory P(k)
+    if len(combinations) == 0:
+        raise ValueError("Must provide at least one combination!")
+    mattrs = fkp_field.attrs
+    mesh = generate_anisotropic_gaussian_mesh(
+        mattrs,
+        poles=theory,
+        seed=seed,
+        los=los,
+        unitary_amplitude=unitary_amplitude,
+    )
+    # Paint it on the catalog -> catalog with geometry and ""clustering""
+    data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
+    randoms = fkp_field.randoms
+    del mesh
+    particles = []
+    for ric_args, nam_args in combinations:
+        # Apply RIC if necessary
+        if ric_args is not None:
+            alpha = data.weights.sum() / randoms.weights.sum()
+            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights, length=ric_args.n_bins + 1)[1:]
+            ric_weights_binned = jnp.where(
+                data_weights_binned == 0,
+                0.0,  # don't care, will never be applied
+                (alpha * ric_args.randoms_weights_binned / data_weights_binned),
+            )
+            ddata = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+        else:
+            ddata = data
+        # Apply NAM if necessary
+        if nam_args is not None:
+            alpha = ddata.weights.sum() / randoms.weights.sum()
+            data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=ddata.weights, length=12 * nam_args.nside**2)
+            nam_weights_binned = jnp.where(
+                nam_args.randoms_weights_binned == 0,
+                0.0,  # don't care, will never be applied
+                data_weights_binned / (alpha * nam_args.randoms_weights_binned),
+            )
+            rrandoms = randoms.clone(weights=randoms.weights * nam_weights_binned[nam_args.randoms_pixels])
+        else:
+            rrandoms = randoms
+        particles.append(fkp_field.clone(data=ddata, randoms=rrandoms))
+    spectra = []
+    for fkpfield in particles:
+        num_shotnoise = compute_fkp2_shotnoise(fkpfield, bin=binner)
+        fkp_mesh = fkpfield.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
+        del fkpfield
+        pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
+        spectra.append(pk.clone(norm=fkp_norm, num_shotnoise=num_shotnoise))
+    return spectra
 
 
 def mock_survey_diff(
