@@ -797,49 +797,42 @@ def mock_surveys_FKP(
     data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
     randoms = fkp_field.randoms
     del mesh
-    particles = []
+    spectra = []
     for ric_args, amr_args, nam_args in combinations:
+        ddata = data.clone()
+        rrandoms = randoms.clone()
         # Apply RIC if necessary
         if ric_args is not None:
-            alpha = data.weights.sum() / randoms.weights.sum()
-            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights, length=ric_args.n_bins + 1)[1:]
+            alpha = ddata.weights.sum() / rrandoms.weights.sum()
+            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=ddata.weights, length=ric_args.n_bins + 1)[1:]
             ric_weights_binned = jnp.where(
                 data_weights_binned == 0,
                 0.0,  # don't care, will never be applied
                 (alpha * ric_args.randoms_weights_binned / data_weights_binned),
             )
-            ddata = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
-        else:
-            ddata = data
-
+            ddata = ddata.clone(weights=ddata.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
         # Apply mode removal (ie linear template regression) if necessary
         # Randoms weights have not been changed yet
         if amr_args is not None:
             data_weights_binned = bincount_2d(
                 amr_args.data_templates_digitized.T,
-                weights=data.weights * amr_args.mask_extremes_in_data,
+                weights=ddata.weights * amr_args.mask_extremes_in_data,
                 length=amr_args.n_bins + 1,
             )[:, 1:, ...]
             p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
             amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
-            ddata = data.clone(weights=data.weights * amr_weights)
-        else:
-            ddata = data
-        # Apply NAM if necessary
+            ddata = ddata.clone(weights=ddata.weights * amr_weights)
+        # Apply NAM if necessary, to randoms
         if nam_args is not None:
-            alpha = ddata.weights.sum() / randoms.weights.sum()
+            alpha = ddata.weights.sum() / rrandoms.weights.sum()
             data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=ddata.weights, length=12 * nam_args.nside**2)
             nam_weights_binned = jnp.where(
                 nam_args.randoms_weights_binned == 0,
                 0.0,  # don't care, will never be applied
                 data_weights_binned / (alpha * nam_args.randoms_weights_binned),
             )
-            rrandoms = randoms.clone(weights=randoms.weights * nam_weights_binned[nam_args.randoms_pixels])
-        else:
-            rrandoms = randoms
-        particles.append(fkp_field.clone(data=ddata, randoms=rrandoms))
-    spectra = []
-    for fkpfield in particles:
+            rrandoms = rrandoms.clone(weights=rrandoms.weights * nam_weights_binned[nam_args.randoms_pixels])
+        fkpfield = fkp_field.clone(data=ddata, randoms=rrandoms)
         num_shotnoise = compute_fkp2_shotnoise(fkpfield, bin=binner)
         fkp_mesh = fkpfield.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
         del fkpfield
