@@ -37,6 +37,26 @@ AICArgs = make_jax_dataclass(
     },
 )
 
+AMRArgsFKP = make_jax_dataclass(
+    class_name="AMRArgsFKP",
+    dynamic_fields=[
+        "data_templates_digitized",
+        "mask_extremes_in_data",
+        "data_templates_normalized",
+        "factor",
+        "constant",
+    ],
+    aux_fields=["n_bins"],
+    types_fields={
+        "data_templates_digitized": jnp.ndarray,
+        "mask_extremes_in_data": jnp.ndarray,
+        "data_templates_normalized": jnp.ndarray,
+        "factor": jnp.ndarray,
+        "constant": jnp.ndarray,
+        "n_bins": int,
+    },
+)
+
 RICArgs = make_jax_dataclass(
     class_name="RICArgs",
     dynamic_fields=[
@@ -210,6 +230,120 @@ def prepare_AIC(
     data_templates_normalized = templates_normalized_d
 
     return AICArgs(
+        data_templates_digitized=data_templates_digitized,
+        mask_extremes_in_data=mask_extremes_d,
+        data_templates_normalized=data_templates_normalized,
+        factor=factor,
+        constant=constant,
+        n_bins=n_bins,
+    )
+
+
+def prepare_AMR_FKP(
+    fkp_field: FKPField,
+    # AIC specific data
+    template_values_data: jnp.ndarray,
+    template_values_randoms: jnp.ndarray,
+    # AIC specific parameters
+    tail: float = 0.5,
+    bin_margin: float = 1e-7,
+    n_bins: int = 10,
+) -> AMRArgsFKP:
+    """
+    Precompute all arguments necessary to :py:func:`get_AIC_weights` except for the ``data_weights``.
+
+    Parameters
+    ----------
+    fkp_field : ParticleField
+        Field containing positions and weights of all the particles.
+    template_values_data : jnp.ndarray
+        Values of the templates for the data.
+    template_values_randoms : jnp.ndarray
+        Values of the templates for the randoms.
+    tail : float, optional
+        Percentile of the (random's) template value distribution to remove, by default 0.5
+    bin_margin : float, optional
+        Margin on the side of edges, by default 1e-7
+    n_bins : int, optional
+        Number of bins for each template in the regression, by default 10
+
+    Returns
+    -------
+    AMRArgsFKP
+        Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
+    """
+    templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
+    templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
+
+    mask_extremes_r = jnp.invert(
+        jnp.any(
+            (template_values_randoms < templates_lower_tails).T | (template_values_randoms > templates_upper_tails).T,
+            axis=0,
+        )
+    )
+
+    mask_extremes_d = jnp.invert(
+        jnp.any(
+            (template_values_data < templates_lower_tails).T | (template_values_data > templates_upper_tails).T,
+            axis=0,
+        )
+    )
+
+    bin_edges = jnp.linspace(
+        start=templates_lower_tails - bin_margin,
+        stop=templates_upper_tails + bin_margin,
+        num=n_bins + 1,
+    )
+
+    templates_normalized_r = (template_values_randoms - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+    templates_normalized_d = (template_values_data - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+
+    templates_digitized_r = jnp.clip(
+        jnp.floor(templates_normalized_r * n_bins).astype(int) - (templates_normalized_r == bin_edges[-1, :]) + 1,
+        min=0,
+        max=n_bins + 1,
+    )
+
+    templates_digitized_d = jnp.clip(
+        jnp.floor(templates_normalized_d * n_bins).astype(int) - (templates_normalized_d == bin_edges[-1, :]) + 1,
+        min=0,
+        max=n_bins + 1,
+    )
+
+    # Binned weights and jacobian are used in the solution
+    randoms_weights_binned = bincount_2d(
+        templates_digitized_r.T,
+        weights=fkp_field.randoms.weights * mask_extremes_r,  # set extremes weights to 0
+        length=n_bins + 1,
+    )[:, 1:, ...]
+
+    masked_randoms_weights = fkp_field.randoms.weights * mask_extremes_r
+    masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
+    wt2 = jnp.concatenate([jnp.ones_like(fkp_field.randoms.weights)[..., None], masked_templates_normalized], axis=-1)
+
+    jacobian = bincount_2d(
+        templates_digitized_r.T,
+        weights=masked_randoms_weights[:, None] * wt2,
+        length=n_bins + 1,
+    )[:, 1:, ...]
+
+    normalization = (fkp_field.data.weights * mask_extremes_d).sum() / (
+        fkp_field.randoms.weights * mask_extremes_r
+    ).sum()  # without the updated data weights: approximate
+
+    # Ravel everything to take advantage of matrix operations
+    jacobian = jacobian.reshape((-1, jacobian.shape[-1]))
+    randoms_weights_binned = randoms_weights_binned.reshape((-1,))
+    # Precompute a matrix that will be reused
+    transpose_jw = normalization * jacobian.T * randoms_weights_binned  # matrix product with diag matrix is just numpy product with the diag vector
+    factor = jnp.linalg.inv(transpose_jw.dot(jacobian)).dot(transpose_jw)
+    constant = normalization * factor.dot(randoms_weights_binned)
+
+    # pre-computed templates
+    data_templates_digitized = templates_digitized_d
+    data_templates_normalized = templates_normalized_d
+
+    return AMRArgsFKP(
         data_templates_digitized=data_templates_digitized,
         mask_extremes_in_data=mask_extremes_d,
         data_templates_normalized=data_templates_normalized,
@@ -573,6 +707,7 @@ def mock_survey_FKP(
     # Data catalog and effects
     fkp_field: FKPField,
     ric_args: RICArgsFKP | None,
+    amr_args,  #: AMRArgsFKP | None,
     nam_args: NAMArgsFKP | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
@@ -601,6 +736,17 @@ def mock_survey_FKP(
             (alpha * ric_args.randoms_weights_binned / data_weights_binned),
         )
         data = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+    # Apply mode removal (ie linear template regression) if necessary
+    # Randoms weights have not been changed yet
+    if amr_args is not None:
+        data_weights_binned = bincount_2d(
+            amr_args.data_templates_digitized.T,
+            weights=data.weights * amr_args.mask_extremes_in_data,
+            length=amr_args.n_bins + 1,
+        )[:, 1:, ...]
+        p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
+        amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
+        data = data.clone(weights=data.weights * amr_weights)
     # Apply NAM if necessary
     if nam_args is not None:
         alpha = data.weights.sum() / randoms.weights.sum()
@@ -652,7 +798,7 @@ def mock_surveys_FKP(
     randoms = fkp_field.randoms
     del mesh
     particles = []
-    for ric_args, nam_args in combinations:
+    for ric_args, amr_args, nam_args in combinations:
         # Apply RIC if necessary
         if ric_args is not None:
             alpha = data.weights.sum() / randoms.weights.sum()
@@ -663,6 +809,20 @@ def mock_surveys_FKP(
                 (alpha * ric_args.randoms_weights_binned / data_weights_binned),
             )
             ddata = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+        else:
+            ddata = data
+
+        # Apply mode removal (ie linear template regression) if necessary
+        # Randoms weights have not been changed yet
+        if amr_args is not None:
+            data_weights_binned = bincount_2d(
+                amr_args.data_templates_digitized.T,
+                weights=data.weights * amr_args.mask_extremes_in_data,
+                length=amr_args.n_bins + 1,
+            )[:, 1:, ...]
+            p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
+            amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
+            ddata = data.clone(weights=data.weights * amr_weights)
         else:
             ddata = data
         # Apply NAM if necessary
