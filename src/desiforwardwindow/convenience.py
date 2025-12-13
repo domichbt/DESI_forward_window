@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from astropy.table import Table
 from jaxpower.types import ObservableLeaf, ObservableTree
 
 from .utils import get_clustering_positions_weights
@@ -123,3 +124,51 @@ def fiducial_DESI(edgesin: np.ndarray) -> ObservableTree:
 
     theory = ObservableTree([ObservableLeaf(k=kin, k_edges=edgesin, value=pole, coords=["k"]) for pole in poles], ells=ells)
     return theory
+
+
+def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | None = None) -> Table:
+    """
+    Return a table containing the usual systematics templates for DESI.
+
+    Parameters
+    ----------
+    map_path : str | os.PathLike
+        Path to the FITS file containing the maps for this photometric region.
+    region : str
+        Photometric region (``"N"`` or ``"S"``).
+    need_maps : list[str] | None, optional
+        Optional additional maps, by default ``None``. Can request ``"EBV_DIFF_MPF"``, ``"SKY_RES_G"``, ``"SKY_RES_R"``, ``"SKY_RES_Z"``.
+
+    Returns
+    -------
+    Table
+        Table containing the usual LSS systematics.
+
+    Note
+    ----
+    This function requires the LSS package to be installed to run.
+    """
+    import LSS.common_tools as common
+
+    need_maps = need_maps or []
+    sysmaps = Table.read(map_path)
+    debv = common.get_debv()  # for later
+    sky_g, sky_r, sky_z = common.get_skyres()
+    cols = list(sysmaps.dtype.names)  # names of templates
+
+    for col in cols:
+        if "DEPTH" in col:
+            bnd = col.split("_")[-1]
+            sysmaps[col] *= 10 ** (-0.4 * common.ext_coeff[bnd] * sysmaps["EBV"])
+    for ec in ["GR", "RZ"]:
+        sysmaps["EBV_DIFF_" + ec] = debv["EBV_DIFF_" + ec]
+    if "EBV_DIFF_MPF" in need_maps:
+        sysmaps["EBV_DIFF_MPF"] = sysmaps["EBV"] - sysmaps["EBV_MPF_Mean_FW15"]
+    if "SKY_RES_G" in need_maps:
+        sysmaps["SKY_RES_G"] = sky_g[region]
+    if "SKY_RES_R" in need_maps:
+        sysmaps["SKY_RES_R"] = sky_r[region]
+    if "SKY_RES_Z" in need_maps:
+        sysmaps["SKY_RES_Z"] = sky_z[region]
+
+    return sysmaps
