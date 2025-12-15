@@ -17,8 +17,8 @@ from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
 
 from .utils import bincount_2d, make_jax_dataclass
 
-AICArgs = make_jax_dataclass(
-    class_name="AICArgs",
+AMRArgs = make_jax_dataclass(
+    class_name="AMRArgs",
     dynamic_fields=[
         "data_templates_digitized",
         "mask_extremes_in_data",
@@ -90,7 +90,7 @@ RICArgsFKP = make_jax_dataclass(
 )
 
 NAMArgsFKP = make_jax_dataclass(
-    class_name="AICArgsFKP",
+    class_name="NAMArgsFKP",
     dynamic_fields=[
         "data_pixels",
         "randoms_pixels",
@@ -124,19 +124,19 @@ NAMArgs = make_jax_dataclass(
 )
 
 
-def prepare_AIC(
+def prepare_AMR(
     data_weights: jnp.ndarray,
     randoms_weights: jnp.ndarray,
-    # AIC specific data
+    # AMR specific data
     template_values_data: jnp.ndarray,
     template_values_randoms: jnp.ndarray,
-    # AIC specific parameters
+    # AMR specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
     n_bins: int = 10,
-) -> AICArgs:
+) -> AMRArgs:
     """
-    Precompute all arguments necessary to :py:func:`get_AIC_weights` except for the ``data_weights``.
+    Precompute all arguments necessary to :py:func:`get_AMR_weights` except for the ``data_weights``.
 
     Parameters
     ----------
@@ -157,8 +157,8 @@ def prepare_AIC(
 
     Returns
     -------
-    AICArgs
-        Dataclass containing all information needed by ``get_AIC_weights`` except ``data.weights``.
+    AMRArgs
+        Dataclass containing all information needed by ``get_AMR_weights`` except ``data.weights``.
     """
     templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
@@ -229,7 +229,7 @@ def prepare_AIC(
     data_templates_digitized = templates_digitized_d
     data_templates_normalized = templates_normalized_d
 
-    return AICArgs(
+    return AMRArgs(
         data_templates_digitized=data_templates_digitized,
         mask_extremes_in_data=mask_extremes_d,
         data_templates_normalized=data_templates_normalized,
@@ -241,16 +241,16 @@ def prepare_AIC(
 
 def prepare_AMR_FKP(
     fkp_field: FKPField,
-    # AIC specific data
+    # AMR specific data
     template_values_data: jnp.ndarray,
     template_values_randoms: jnp.ndarray,
-    # AIC specific parameters
+    # AMR specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
     n_bins: int = 10,
 ) -> AMRArgsFKP:
     """
-    Precompute all arguments necessary to :py:func:`get_AIC_weights` except for the ``data_weights``.
+    Precompute all arguments necessary to get Angular Mode Removal in :py:func:`mock_survey_FKP`.
 
     Parameters
     ----------
@@ -353,9 +353,9 @@ def prepare_AMR_FKP(
     )
 
 
-def get_AIC_weights(
+def get_AMR_weights(
     data_weights: jnp.ndarray,
-    fixed_args: AICArgs,
+    fixed_args: AMRArgs,
 ) -> jnp.ndarray:
     data_weights_binned = bincount_2d(
         fixed_args.data_templates_digitized.T,
@@ -615,7 +615,7 @@ def mock_survey(
     # Data catalog and effects
     data: ParticleField,
     RIC_args: RICArgs | None,
-    AIC_args: AICArgs | None,
+    AMR_args: AMRArgs | None,
     NAM_args: NAMArgs | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
@@ -640,8 +640,8 @@ def mock_survey(
         "Data" particles (randomly distributed positions), on which to paint the mock's fluctuation. This is where the geometry is contained.
     RIC_args : RICArgs | None
         Fixed precomputed arguments for :py:func:`get_RIC_weights`; see :py:func:`prepare_RIC`. Set to ``None`` to not apply RIC.
-    AIC_args : AICArgs | None
-        Fixed precomputed arguments for :py:func:`get_AIC_weights`; see :py:func:`prepare_AIC`. Set to ``None`` to not apply AIC.
+    AMR_args : AMRArgs | None
+        Fixed precomputed arguments for :py:func:`get_AMR_weights`; see :py:func:`prepare_AMR`. Set to ``None`` to not apply AMR.
     NAM_args : NAMArgs | None
         Fixed precomputed arguments for :py:func:`get_NAM_weights`; see :py:func:`prepare_NAM`. Set to ``None`` to not apply NAM.
     binner : BinMesh2SpectrumPoles
@@ -660,7 +660,7 @@ def mock_survey(
 
     Notes
     -----
-    NAM is a stronger kind of AIC. Applying both AIC and NAM or just NAM will result in the same spectrum.
+    NAM is a stronger kind of ALR. Applying both AMR and NAM or just NAM will result in the same spectrum, possibly with worse non-linear effects when applying both.
     """
     # Generate a gaussian mesh mock with exact required theory P(k)
     mattrs = data.attrs
@@ -678,10 +678,10 @@ def mock_survey(
     if RIC_args is not None:
         RIC_weights = get_RIC_weights(data_field.weights, RIC_args)
         data_field = data_field.clone(weights=data_field.weights * RIC_weights)
-    # Apply AIC if necessary
-    if AIC_args is not None:
-        AIC_weights = get_AIC_weights(data_field.weights, AIC_args)
-        data_field = data_field.clone(weights=data_field.weights * AIC_weights)
+    # Apply AMR if necessary
+    if AMR_args is not None:
+        AMR_weights = get_AMR_weights(data_field.weights, AMR_args)
+        data_field = data_field.clone(weights=data_field.weights * AMR_weights)
     # Apply AIC if necessary
     if NAM_args is not None:
         NAM_weights = get_NAM_weights(data_field.weights, NAM_args)
@@ -707,7 +707,7 @@ def mock_survey_FKP(
     # Data catalog and effects
     fkp_field: FKPField,
     ric_args: RICArgsFKP | None,
-    amr_args,  #: AMRArgsFKP | None,
+    amr_args: AMRArgsFKP | None,
     nam_args: NAMArgsFKP | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
@@ -777,7 +777,7 @@ def mock_surveys_FKP(
     unitary_amplitude: bool,
     # Data catalog and effects
     fkp_field: FKPField,
-    combinations: list[tuple[RICArgsFKP | None, NAMArgsFKP | None]],
+    combinations: list[tuple[RICArgsFKP | None, AMRArgsFKP | None, NAMArgsFKP | None]],
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
@@ -850,7 +850,7 @@ def mock_survey_diff(
     # Data catalog and effects
     data: ParticleField,
     RIC_args: RICArgs | None,
-    AIC_args: AICArgs | None,
+    AMR_args: AMRArgs | None,
     NAM_args: NAMArgs | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
@@ -861,7 +861,7 @@ def mock_survey_diff(
     """
     Apply observation forward modeling to a theoretical power spectrum and return the difference of the power spectrum with a geometry-only observation (no integral constraints).
 
-    This is intended for use of the RIC and AIC as a control variate.
+    This is intended for use of the RIC and AMR as a control variate.
 
     Parameters
     ----------
@@ -877,8 +877,8 @@ def mock_survey_diff(
         "Data" particles (randomly distributed positions), on which to paint the mock's fluctuation. This is where the geometry is contained.
     RIC_args : RICArgs | None
         Fixed precomputed arguments for :py:func:`get_RIC_weights`; see :py:func:`prepare_RIC`. Set to ``None`` to not apply RIC.
-    AIC_args : AICArgs | None
-        Fixed precomputed arguments for :py:func:`get_AIC_weights`; see :py:func:`prepare_AIC`. Set to ``None`` to not apply AIC.
+    AMR_args : AMRArgs | None
+        Fixed precomputed arguments for :py:func:`get_AMR_weights`; see :py:func:`prepare_AMR`. Set to ``None`` to not apply AMR.
     NAM_args : NAMArgs | None
         Fixed precomputed arguments for :py:func:`get_NAM_weights`; see :py:func:`prepare_NAM`. Set to ``None`` to not apply NAM.
     binner : BinMesh2SpectrumPoles
@@ -893,9 +893,9 @@ def mock_survey_diff(
     Returns
     -------
     Mesh2SpectrumPoles
-        Difference of two observations (with and without RIC/AIC) of a realization of the theory power spectrum.
+        Difference of two observations (with and without RIC/AMR) of a realization of the theory power spectrum.
     """
-    if (get_RIC_weights is None) and (get_AIC_weights is None):
+    if (get_RIC_weights is None) and (get_AMR_weights is None):
         raise ValueError(
             "When calculating a difference, should add at least one other observational effect than the geometry. Did you mean to call `mock_survey` ?"
         )
@@ -918,10 +918,10 @@ def mock_survey_diff(
     if RIC_args is not None:
         RIC_weights = get_RIC_weights(data_field.weights, RIC_args)
         data_field = data_field.clone(weights=data_field.weights * RIC_weights)
-    # Apply AIC if necessary
-    if AIC_args is not None:
-        AIC_weights = get_AIC_weights(data_field.weights, AIC_args)
-        data_field = data_field.clone(weights=data_field.weights * AIC_weights)
+    # Apply AMR if necessary
+    if AMR_args is not None:
+        AMR_weights = get_AMR_weights(data_field.weights, AMR_args)
+        data_field = data_field.clone(weights=data_field.weights * AMR_weights)
     # Apply AIC if necessary
     if NAM_args is not None:
         NAM_weights = get_NAM_weights(data_field.weights, NAM_args)
