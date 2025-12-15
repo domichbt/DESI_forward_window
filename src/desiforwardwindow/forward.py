@@ -7,13 +7,12 @@ import jax.numpy as jnp
 from jaxpower import (
     BinMesh2SpectrumPoles,
     FKPField,
-    ParticleField,
     RealMeshField,
     compute_fkp2_shotnoise,
     compute_mesh2_spectrum,
     generate_anisotropic_gaussian_mesh,
 )
-from lsstypes import Mesh2SpectrumPoles, ObservableTree, tree_map
+from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
 from .utils import bincount_2d, make_jax_dataclass
 
@@ -304,6 +303,41 @@ def mock_survey_FKP(
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
 ) -> Mesh2SpectrumPoles:
+    """
+    Get the power spectrum from a mock survey given an input theory, a seed and a set of observational effects.
+
+    Parameters
+    ----------
+    theory : ObservableTree
+        Theory power spectrum to "observe".
+    seed : jnp.ndarray
+        Jax random key for the mesh generation.
+    los : Literal["local", "x", "y", "z"]
+        Line of sight for the mock generation.
+    unitary_amplitude : bool
+        If ``True``, normalize the mock's amplitude to be unitary.
+    fkp_field : FKPField
+        FKP field contaning data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should be randoms), but the FKP field serves to designate data and randoms amongst the original randoms.
+    ric_args : RICArgsFKP | None
+        Fixed precomputed arguments for RIC weights computation; see :py:func:`prepare_RIC_FKP`. Set to ``None`` to not apply RIC.
+    amr_args : AMRArgsFKP | None
+        Fixed precomputed arguments for AMR weights computation; see :py:func:`prepare_AMR_FKP`. Set to ``None`` to not apply AMR.
+    nam_args : NAMArgsFKP | None
+            Fixed precomputed arguments for NAM/AIC weights computation; see :py:func:`prepare_NAM_FKP`. Set to ``None`` to not apply NAM/AIC.
+    binner : BinMesh2SpectrumPoles
+        Binning operator to compute the output power spectrum.
+    fkp_norm : jnp.ndarray
+        Pre-computed power spectrum norm for the FKP field ``fkp_field``, disregarding any future changes in weights.
+
+    Returns
+    -------
+    Mesh2SpectrumPoles
+        Realization of an observation of the theory power spectrum.
+
+    Notes
+    -----
+    NAM is a stronger kind of AMR. Applying both AMR and NAM or just NAM will result in the same spectrum, possibly with worse non-linear effects when applying both.
+    """
     # Generate a gaussian mesh mock with exact required theory P(k)
     mattrs = fkp_field.attrs
     mesh = generate_anisotropic_gaussian_mesh(
@@ -373,6 +407,37 @@ def mock_surveys_FKP(
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
 ) -> list[Mesh2SpectrumPoles]:
+    """
+    Get the power spectra from different mock surveys given one input theory, one seed and different sets of observational effects.
+
+    Parameters
+    ----------
+    theory : ObservableTree
+        Theory power spectrum to "observe".
+    seed : jnp.ndarray
+        Jax random key for the mesh generation.
+    los : Literal["local", "x", "y", "z"]
+        Line of sight for the mock generation.
+    unitary_amplitude : bool
+        If ``True``, normalize the mock's amplitude to be unitary.
+    fkp_field : FKPField
+        FKP field contaning data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should be randoms), but the FKP field serves to designate data and randoms amongst the original randoms.
+    combinations : list[tuple[RICArgsFKP | None, AMRArgsFKP | None, NAMArgsFKP | None]]
+        Tuples of precomputed arguments for RIC, AMR and NAM/AIC application. See :py:func:`prepare_RIC_FKP`, :py:func:`prepare_AMR_FKP` and :py:func:`prepare_NAM_FKP`. For example, ``combinations=[(None, None, None)]`` will only return geometry.
+    binner : BinMesh2SpectrumPoles
+        Binning operator to compute the output power spectrum.
+    fkp_norm : jnp.ndarray
+        Pre-computed power spectrum norm for the FKP field ``fkp_field``, disregarding any future changes in weights.
+
+    Returns
+    -------
+    Mesh2SpectrumPoles
+        One realization of the observations of the theory power spectrum.
+
+    Notes
+    -----
+    NAM is a stronger kind of AMR. Applying both AMR and NAM or just NAM will result in the same spectrum, possibly with worse non-linear effects when applying both.
+    """
     # Generate a gaussian mesh mock with exact required theory P(k)
     if len(combinations) == 0:
         raise ValueError("Must provide at least one combination!")

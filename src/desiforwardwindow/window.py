@@ -3,13 +3,12 @@
 import os
 from collections.abc import Callable
 from pathlib import Path
-from functools import partial
 from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxpower import BinMesh2SpectrumPoles, RealMeshField, compute_mesh2_spectrum_window, compute_normalization
+from jaxpower import BinMesh2SpectrumPoles, RealMeshField, compute_mesh2_spectrum_window
 from lsstypes import Mesh2SpectrumPoles, WindowMatrix
 from tqdm import tqdm
 
