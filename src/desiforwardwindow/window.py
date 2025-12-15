@@ -15,7 +15,8 @@ from tqdm import tqdm
 
 
 def get_window_geometry(
-    selection: RealMeshField,
+    selection1: RealMeshField,
+    selection2: RealMeshField | None,
     theory_edges: np.ndarray,
     theory_ells: tuple,
     binner: BinMesh2SpectrumPoles,
@@ -30,8 +31,10 @@ def get_window_geometry(
 
     Parameters
     ----------
-    selection : RealMeshField
+    selection1 : RealMeshField
         Mesh describing the geometry.
+    selection2 : RealMeshField
+        Optional second mesh also describing the geometry, to remove any noise due to the autocorrelation of ``selection1``.
     theory_edges : np.ndarray
         Input bin edges, can be an :py:class:`lsstypes.ObservableTree` object with stored bins.
     theory_ells : tuple
@@ -58,7 +61,14 @@ def get_window_geometry(
     -----
     This is simply a thin wrapper around :py:func:`jaxpower.compute_mesh2_spectrum_window`.
     """
-    return compute_mesh2_spectrum_window(selection, edgesin=theory_edges, ellsin=theory_ells, bin=binner, norm=norm, los=los, flags=flags, pbar=pbar, **kwargs)
+    if selection2:
+        return compute_mesh2_spectrum_window(
+            selection1, selection2, edgesin=theory_edges, ellsin=theory_ells, bin=binner, norm=norm, los=los, flags=flags, pbar=pbar, **kwargs
+        )
+    else:
+        return compute_mesh2_spectrum_window(
+            selection1, edgesin=theory_edges, ellsin=theory_ells, bin=binner, norm=norm, los=los, flags=flags, pbar=pbar, **kwargs
+        )
 
 
 def get_window_spikes(
