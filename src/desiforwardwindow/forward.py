@@ -14,7 +14,7 @@ from jaxpower import (
 )
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
-from .utils import bincount_2d, make_jax_dataclass
+from .utils import bincount_2d, make_jax_dataclass, select_region
 
 AMRArgsFKP = make_jax_dataclass(
     class_name="AMRArgsFKP",
@@ -42,12 +42,17 @@ RICArgsFKP = make_jax_dataclass(
         "data_distances_digitized",
         "data_to_remove",
         "randoms_weights_binned",
+        "data_regions",
+        "randoms_regions",
     ],
-    aux_fields=["n_bins"],
+    aux_fields=["n_bins", "regions"],
     types_fields={
         "data_distances_digitized": jnp.ndarray,
         "data_to_remove": jnp.ndarray,
-        "randoms_weights_binned": jnp.ndarray,
+        "data_regions": list[jnp.ndarray],
+        "randoms_regions": list[jnp.ndarray],
+        "randoms_weights_binned": list[jnp.ndarray],
+        "regions": list[str],
         "n_bins": int,
     },
 )
@@ -187,6 +192,7 @@ def prepare_AMR_FKP(
 
 def prepare_RIC_FKP(
     fkp_field: FKPField,
+    regions: list[str],
     boxcenter: jnp.ndarray,
     boxsize: jnp.ndarray,
     # RIC specific parameters
@@ -219,7 +225,23 @@ def prepare_RIC_FKP(
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
 
-    randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=fkp_field.randoms.weights, length=n_bins + 1)[1:]
+    # region selection
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_regions = []
+    randoms_regions = []
+    randoms_weights_binned = []
+    for region in regions:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_weights_binned.append(
+            jnp.bincount(randoms_distances_digitized[randoms_mask], weights=fkp_field.randoms.weights[randoms_mask], length=n_bins + 1)[1:]
+        )
+        data_regions.append(data_mask)
+        randoms_regions.append(randoms_mask)
 
     data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
     randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
@@ -228,7 +250,10 @@ def prepare_RIC_FKP(
     return RICArgsFKP(
         data_distances_digitized=data_distances_digitized,
         randoms_weights_binned=randoms_weights_binned,
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
         data_to_remove=data_to_remove[data_distances_digitized - 1],
+        regions=regions,
         n_bins=n_bins,
     )
 
@@ -360,14 +385,17 @@ def mock_survey_FKP(
     del mesh
     # Apply RIC if necessary
     if ric_args is not None:
-        alpha = data.weights.sum() / randoms.weights.sum()
-        data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights, length=ric_args.n_bins + 1)[1:]
-        ric_weights_binned = jnp.where(
-            data_weights_binned == 0,
-            0.0,  # don't care, will never be applied
-            (alpha * ric_args.randoms_weights_binned / data_weights_binned),
-        )
-        data = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+        for data_region, randoms_region, randoms_weights_binned in zip(
+            ric_args.data_regions, ric_args.randoms_regions, ric_args.randoms_weights_binned, strict=True
+        ):
+            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights * data_region, length=ric_args.n_bins + 1)[1:]
+            ric_weights_binned = jnp.where(
+                data_weights_binned == 0,
+                0.0,  # don't care, will never be applied
+                (alpha * randoms_weights_binned / data_weights_binned),
+            )
+            data = data.clone(weights=data.weights * jnp.where(data_region, ric_weights_binned[ric_args.data_distances_digitized - 1], 1.0))
     # Apply mode removal (ie linear template regression) if necessary
     # Randoms weights have not been changed yet
     if amr_args is not None:
