@@ -302,6 +302,9 @@ def mock_survey_FKP(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
+    # For region renormalization
+    data_regions: list[jnp.ndarray] | None = None,
+    randoms_regions: list[jnp.ndarray] | None = None,
 ) -> Mesh2SpectrumPoles:
     """
     Get the power spectrum from a mock survey given an input theory, a seed and a set of observational effects.
@@ -328,6 +331,10 @@ def mock_survey_FKP(
         Binning operator to compute the output power spectrum.
     fkp_norm : jnp.ndarray
         Pre-computed power spectrum norm for the FKP field ``fkp_field``, disregarding any future changes in weights.
+    data_regions : list[jnp.ndarray]
+        List of masks for the renormalization regions in the data. Usually "N", "S", or split by galactic caps ("N", "SNGC", "SSGC"). May include DES for quasars.
+    randoms_regions : list[jnp.ndarray]
+        List of masks for the renormalization regions in the randoms. Usually "N", "S", or split by galactic caps ("N", "SNGC", "SSGC"). May include DES for quasars.
 
     Returns
     -------
@@ -383,6 +390,16 @@ def mock_survey_FKP(
         )
         randoms = randoms.clone(weights=randoms.weights * nam_weights_binned[nam_args.randoms_pixels])
     # Paint to mesh for P(k) computation and build FKP mesh
+    if randoms_regions is not None:
+        # global randoms renormalization per region
+        global_alpha = data.weights.sum() / randoms.weights.sum()
+        correction = jnp.ones_like(randoms.weights)
+        for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
+            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            # Multiply by one outside mask and alpha/global_alpha inside
+            correction *= jnp.where(randoms_region, alpha / global_alpha, 1.0)
+            # jnp.invert(randoms_region) * 1.0 + randoms_region * alpha / global_alpha
+        randoms = randoms.clone(weights=randoms.weights * correction)
     fkp_field = fkp_field.clone(data=data, randoms=randoms)
     num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
     fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
