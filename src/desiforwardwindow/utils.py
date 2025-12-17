@@ -11,6 +11,7 @@ import numpy as np
 from mockfactory import Catalog, sky_to_cartesian
 
 NSIDE = 256
+footprint = None
 
 
 @jax.jit
