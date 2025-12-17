@@ -22,16 +22,18 @@ AMRArgsFKP = make_jax_dataclass(
         "data_templates_digitized",
         "mask_extremes_in_data",
         "data_templates_normalized",
-        "factor",
-        "constant",
+        "data_regions",
+        "factors",
+        "constants",
     ],
     aux_fields=["n_bins"],
     types_fields={
         "data_templates_digitized": jnp.ndarray,
         "mask_extremes_in_data": jnp.ndarray,
         "data_templates_normalized": jnp.ndarray,
-        "factor": jnp.ndarray,
-        "constant": jnp.ndarray,
+        "data_regions": list[jnp.ndarray],
+        "factors": list[jnp.ndarray],
+        "constants": list[jnp.ndarray],
         "n_bins": int,
     },
 )
@@ -78,6 +80,8 @@ NAMArgsFKP = make_jax_dataclass(
 
 def prepare_AMR_FKP(
     fkp_field: FKPField,
+    redshifts,
+    regions_zranges: list[tuple[str, tuple[float, float]]],
     # AMR specific data
     template_values_data: jnp.ndarray,
     template_values_randoms: jnp.ndarray,
@@ -109,6 +113,21 @@ def prepare_AMR_FKP(
     AMRArgsFKP
         Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
     """
+    # Select the regions
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    try:
+        data_redshift = redshifts[0]
+        randoms_redshift = redshifts[1]
+    except TypeError:
+        data_redshift = redshifts(data_distances)
+        randoms_redshift = redshifts(randoms_distances)
+
     templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
 
@@ -147,34 +166,48 @@ def prepare_AMR_FKP(
         max=n_bins + 1,
     )
 
-    # Binned weights and jacobian are used in the solution
-    randoms_weights_binned = bincount_2d(
-        templates_digitized_r.T,
-        weights=fkp_field.randoms.weights * mask_extremes_r,  # set extremes weights to 0
-        length=n_bins + 1,
-    )[:, 1:, ...]
+    data_regions = []
+    factors = []
+    constants = []
 
-    masked_randoms_weights = fkp_field.randoms.weights * mask_extremes_r
-    masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
-    wt2 = jnp.concatenate([jnp.ones_like(fkp_field.randoms.weights)[..., None], masked_templates_normalized], axis=-1)
+    for region, (zmin, zmax) in regions_zranges:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
 
-    jacobian = bincount_2d(
-        templates_digitized_r.T,
-        weights=masked_randoms_weights[:, None] * wt2,
-        length=n_bins + 1,
-    )[:, 1:, ...]
+        # Binned weights and jacobian are used in the solution
+        randoms_weights_binned = bincount_2d(
+            templates_digitized_r.T,
+            weights=fkp_field.randoms.weights * mask_extremes_r * randoms_mask,  # set extremes weights to 0
+            length=n_bins + 1,
+        )[:, 1:, ...]
 
-    normalization = (fkp_field.data.weights * mask_extremes_d).sum() / (
-        fkp_field.randoms.weights * mask_extremes_r
-    ).sum()  # without the updated data weights: approximate
+        masked_randoms_weights = fkp_field.randoms.weights * mask_extremes_r * randoms_mask
+        masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
+        wt2 = jnp.concatenate([jnp.ones_like(fkp_field.randoms.weights)[..., None], masked_templates_normalized], axis=-1)
 
-    # Ravel everything to take advantage of matrix operations
-    jacobian = jacobian.reshape((-1, jacobian.shape[-1]))
-    randoms_weights_binned = randoms_weights_binned.reshape((-1,))
-    # Precompute a matrix that will be reused
-    transpose_jw = normalization * jacobian.T * randoms_weights_binned  # matrix product with diag matrix is just numpy product with the diag vector
-    factor = jnp.linalg.inv(transpose_jw.dot(jacobian)).dot(transpose_jw)
-    constant = normalization * factor.dot(randoms_weights_binned)
+        jacobian = bincount_2d(
+            templates_digitized_r.T,
+            weights=masked_randoms_weights[:, None] * wt2,
+            length=n_bins + 1,
+        )[:, 1:, ...]
+
+        normalization = (
+            fkp_field.data.weights * mask_extremes_d * data_mask
+        ).sum() / masked_randoms_weights.sum()  # without the updated data weights: approximate
+
+        # Ravel everything to take advantage of matrix operations
+        jacobian = jacobian.reshape((-1, jacobian.shape[-1]))
+        randoms_weights_binned = randoms_weights_binned.reshape((-1,))
+        # Precompute a matrix that will be reused
+        transpose_jw = normalization * jacobian.T * randoms_weights_binned  # matrix product with diag matrix is just numpy product with the diag vector
+        factor = jnp.linalg.inv(transpose_jw.dot(jacobian)).dot(transpose_jw)
+        constant = normalization * factor.dot(randoms_weights_binned)
+
+        data_regions.append(data_mask)
+        factors.append(factor)
+        constants.append(constant)
 
     # pre-computed templates
     data_templates_digitized = templates_digitized_d
@@ -184,8 +217,9 @@ def prepare_AMR_FKP(
         data_templates_digitized=data_templates_digitized,
         mask_extremes_in_data=mask_extremes_d,
         data_templates_normalized=data_templates_normalized,
-        factor=factor,
-        constant=constant,
+        data_regions=data_regions,
+        factors=factor,
+        constants=constant,
         n_bins=n_bins,
     )
 
@@ -399,14 +433,15 @@ def mock_survey_FKP(
     # Apply mode removal (ie linear template regression) if necessary
     # Randoms weights have not been changed yet
     if amr_args is not None:
-        data_weights_binned = bincount_2d(
-            amr_args.data_templates_digitized.T,
-            weights=data.weights * amr_args.mask_extremes_in_data,
-            length=amr_args.n_bins + 1,
-        )[:, 1:, ...]
-        p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
-        amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
-        data = data.clone(weights=data.weights * amr_weights)
+        for data_region, factor, constant in zip(amr_args.data_regions, amr_args.factors, amr_args.constants, strict=True):
+            data_weights_binned = bincount_2d(
+                amr_args.data_templates_digitized.T,
+                weights=data.weights * amr_args.mask_extremes_in_data * data_region,
+                length=amr_args.n_bins + 1,
+            )[:, 1:, ...]
+            p_opt = factor.dot(data_weights_binned.reshape((-1,))) - constant
+            amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
+            data = data.clone(weights=data.weights * jnp.where(data_region, amr_weights, 1.0))
     # Apply NAM if necessary
     if nam_args is not None:
         alpha = data.weights.sum() / randoms.weights.sum()
