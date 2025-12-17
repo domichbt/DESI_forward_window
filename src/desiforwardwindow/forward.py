@@ -80,7 +80,7 @@ NAMArgsFKP = make_jax_dataclass(
 
 def prepare_AMR_FKP(
     fkp_field: FKPField,
-    redshifts,
+    redshifts: tuple[jnp.ndarray, jnp.ndarray],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     # AMR specific data
     template_values_data: jnp.ndarray,
@@ -121,12 +121,8 @@ def prepare_AMR_FKP(
     data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
     randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
-    try:
-        data_redshift = redshifts[0]
-        randoms_redshift = redshifts[1]
-    except TypeError:
-        data_redshift = redshifts(data_distances)
-        randoms_redshift = redshifts(randoms_distances)
+    data_redshift = redshifts[0]
+    randoms_redshift = redshifts[1]
 
     templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")

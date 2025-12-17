@@ -17,6 +17,7 @@ def get_randoms(
     zrange: tuple[float, float] | None,
     tracer: Literal["QSO", "LRG", "BGS", "ELG", "ELG_LOPnotqso", "ELG_notqso"],
     weight_type: str | None = "default",
+    return_redshift: bool = False,
     basedir: os.PathLike = Path("/dvs_ro/cfs/cdirs/desi/survey/catalogs/Y3/LSS/loa-v1/LSScats/v2/fNL/"),
     i_random_min: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -48,10 +49,13 @@ def get_randoms(
     One can easily get mesh attributes from :py:fun:`jaxpower.get_mesh_attrs` after this, and paint a ParticleField.
     """
     filenames = [basedir / f"{tracer}_{region}_{i}_clustering.ran.fits" for i in range(i_random_min, i_random_min + n_randoms)]
-    positions, weights = get_clustering_positions_weights(filenames, kind="randoms", region=region, zrange=zrange, weight_type=weight_type)
+    positions, weights, z = get_clustering_positions_weights(filenames, kind="randoms", region=region, zrange=zrange, weight_type=weight_type)
     if weight_type is None:
         weights = [np.ones_like(weights[0])]
-    return positions, weights
+    if return_redshift:
+        return positions, weights, z
+    else:
+        return positions, weights
 
 
 def fiducial_planck_2018(edgesin: np.ndarray) -> ObservableTree:
@@ -126,7 +130,7 @@ def fiducial_DESI(edgesin: np.ndarray) -> ObservableTree:
     return theory
 
 
-def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | None = None) -> Table:
+def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | None = None, ebv_path: str | None = None) -> Table:
     """
     Return a table containing the usual systematics templates for DESI.
 
@@ -138,6 +142,8 @@ def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | 
         Photometric region (``"N"`` or ``"S"``).
     need_maps : list[str] | None, optional
         Optional additional maps, by default ``None``. Can request ``"EBV_DIFF_MPF"``, ``"SKY_RES_G"``, ``"SKY_RES_R"``, ``"SKY_RES_Z"``.
+    ebv_path : str | os.PathLike | None
+        Optional custom path to the directory containing the EBV file, for :py:func:`LSS.common_tools.get_debv`.
 
     Returns
     -------
@@ -152,8 +158,9 @@ def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | 
 
     need_maps = need_maps or []
     sysmaps = Table.read(map_path)
-    debv = common.get_debv()  # for later
-    sky_g, sky_r, sky_z = common.get_skyres()
+
+    ebv_path = ebv_path or "/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars_y3/v0.1/final_maps/lss/desi_ebv_lss_256.fits"
+    debv = common.get_debv(ebv_path)
     cols = list(sysmaps.dtype.names)  # names of templates
 
     for col in cols:
@@ -164,11 +171,14 @@ def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | 
         sysmaps["EBV_DIFF_" + ec] = debv["EBV_DIFF_" + ec]
     if "EBV_DIFF_MPF" in need_maps:
         sysmaps["EBV_DIFF_MPF"] = sysmaps["EBV"] - sysmaps["EBV_MPF_Mean_FW15"]
-    if "SKY_RES_G" in need_maps:
-        sysmaps["SKY_RES_G"] = sky_g[region]
-    if "SKY_RES_R" in need_maps:
-        sysmaps["SKY_RES_R"] = sky_r[region]
-    if "SKY_RES_Z" in need_maps:
-        sysmaps["SKY_RES_Z"] = sky_z[region]
+
+    if ("SKY_RES_G" in need_maps) or ("SKY_RES_R" in need_maps) or ("SKY_RES_Z" in need_maps):
+        sky_g, sky_r, sky_z = common.get_skyres()
+        if "SKY_RES_G" in need_maps:
+            sysmaps["SKY_RES_G"] = sky_g[region]
+        if "SKY_RES_R" in need_maps:
+            sysmaps["SKY_RES_R"] = sky_r[region]
+        if "SKY_RES_Z" in need_maps:
+            sysmaps["SKY_RES_Z"] = sky_z[region]
 
     return sysmaps
