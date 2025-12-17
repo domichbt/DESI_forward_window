@@ -214,8 +214,8 @@ def prepare_AMR_FKP(
         mask_extremes_in_data=mask_extremes_d,
         data_templates_normalized=data_templates_normalized,
         data_regions=data_regions,
-        factors=factor,
-        constants=constant,
+        factors=factors,
+        constants=constants,
         n_bins=n_bins,
     )
 
