@@ -504,14 +504,17 @@ def mock_surveys_FKP(
         rrandoms = randoms.clone()
         # Apply RIC if necessary
         if ric_args is not None:
-            alpha = ddata.weights.sum() / rrandoms.weights.sum()
-            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=ddata.weights, length=ric_args.n_bins + 1)[1:]
-            ric_weights_binned = jnp.where(
-                data_weights_binned == 0,
-                0.0,  # don't care, will never be applied
-                (alpha * ric_args.randoms_weights_binned / data_weights_binned),
-            )
-            ddata = ddata.clone(weights=ddata.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+            for data_region, randoms_region, randoms_weights_binned in zip(
+                ric_args.data_regions, ric_args.randoms_regions, ric_args.randoms_weights_binned, strict=True
+            ):
+                alpha = jnp.where(data_region, ddata.weights, 0.0).sum() / jnp.where(randoms_region, rrandoms.weights, 0.0).sum()
+                data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=ddata.weights * data_region, length=ric_args.n_bins + 1)[1:]
+                ric_weights_binned = jnp.where(
+                    data_weights_binned == 0,
+                    0.0,  # don't care, will never be applied
+                    (alpha * randoms_weights_binned / data_weights_binned),
+                )
+                ddata = ddata.clone(weights=ddata.weights * jnp.where(data_region, ric_weights_binned[ric_args.data_distances_digitized - 1], 1.0))
         # Apply mode removal (ie linear template regression) if necessary
         # Randoms weights have not been changed yet
         if amr_args is not None:
