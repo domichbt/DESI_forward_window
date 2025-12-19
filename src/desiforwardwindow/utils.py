@@ -189,7 +189,7 @@ def get_clustering_positions_weights(*fns, **kwargs):
     [ra, dec, z], weights = get_clustering_rdzw(*fns, **kwargs)
     dist = fiducial.comoving_radial_distance(z)
     positions = sky_to_cartesian(dist, ra, dec)
-    return positions, weights
+    return positions, weights, z
 
 
 def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: list[str], types_fields: dict[str, type] | None = None) -> dataclass:

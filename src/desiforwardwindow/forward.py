@@ -14,7 +14,7 @@ from jaxpower import (
 )
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
-from .utils import bincount_2d, make_jax_dataclass
+from .utils import bincount_2d, make_jax_dataclass, select_region
 
 AMRArgsFKP = make_jax_dataclass(
     class_name="AMRArgsFKP",
@@ -22,16 +22,18 @@ AMRArgsFKP = make_jax_dataclass(
         "data_templates_digitized",
         "mask_extremes_in_data",
         "data_templates_normalized",
-        "factor",
-        "constant",
+        "data_regions",
+        "factors",
+        "constants",
     ],
     aux_fields=["n_bins"],
     types_fields={
         "data_templates_digitized": jnp.ndarray,
         "mask_extremes_in_data": jnp.ndarray,
         "data_templates_normalized": jnp.ndarray,
-        "factor": jnp.ndarray,
-        "constant": jnp.ndarray,
+        "data_regions": list[jnp.ndarray],
+        "factors": list[jnp.ndarray],
+        "constants": list[jnp.ndarray],
         "n_bins": int,
     },
 )
@@ -42,12 +44,17 @@ RICArgsFKP = make_jax_dataclass(
         "data_distances_digitized",
         "data_to_remove",
         "randoms_weights_binned",
+        "data_regions",
+        "randoms_regions",
     ],
-    aux_fields=["n_bins"],
+    aux_fields=["n_bins", "regions"],
     types_fields={
         "data_distances_digitized": jnp.ndarray,
         "data_to_remove": jnp.ndarray,
-        "randoms_weights_binned": jnp.ndarray,
+        "data_regions": list[jnp.ndarray],
+        "randoms_regions": list[jnp.ndarray],
+        "randoms_weights_binned": list[jnp.ndarray],
+        "regions": list[str],
         "n_bins": int,
     },
 )
@@ -59,13 +66,17 @@ NAMArgsFKP = make_jax_dataclass(
         "randoms_pixels",
         "data_to_remove",
         "randoms_weights_binned",
+        "data_regions",
+        "randoms_regions",
     ],
     aux_fields=["nside"],
     types_fields={
         "data_pixels": jnp.ndarray,
         "randoms_pixels": jnp.ndarray,
         "data_to_remove": jnp.ndarray,
-        "randoms_weights_binned": jnp.ndarray,
+        "data_regions": list[jnp.ndarray],
+        "randoms_regions": list[jnp.ndarray],
+        "randoms_weights_binned": list[jnp.ndarray],
         "nside": int,
     },
 )
@@ -73,6 +84,8 @@ NAMArgsFKP = make_jax_dataclass(
 
 def prepare_AMR_FKP(
     fkp_field: FKPField,
+    redshifts: tuple[jnp.ndarray, jnp.ndarray],
+    regions_zranges: list[tuple[str, tuple[float, float]]],
     # AMR specific data
     template_values_data: jnp.ndarray,
     template_values_randoms: jnp.ndarray,
@@ -104,6 +117,17 @@ def prepare_AMR_FKP(
     AMRArgsFKP
         Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
     """
+    # Select the regions
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_redshift = redshifts[0]
+    randoms_redshift = redshifts[1]
+
     templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
 
@@ -142,34 +166,48 @@ def prepare_AMR_FKP(
         max=n_bins + 1,
     )
 
-    # Binned weights and jacobian are used in the solution
-    randoms_weights_binned = bincount_2d(
-        templates_digitized_r.T,
-        weights=fkp_field.randoms.weights * mask_extremes_r,  # set extremes weights to 0
-        length=n_bins + 1,
-    )[:, 1:, ...]
+    data_regions = []
+    factors = []
+    constants = []
 
-    masked_randoms_weights = fkp_field.randoms.weights * mask_extremes_r
-    masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
-    wt2 = jnp.concatenate([jnp.ones_like(fkp_field.randoms.weights)[..., None], masked_templates_normalized], axis=-1)
+    for region, (zmin, zmax) in regions_zranges:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
 
-    jacobian = bincount_2d(
-        templates_digitized_r.T,
-        weights=masked_randoms_weights[:, None] * wt2,
-        length=n_bins + 1,
-    )[:, 1:, ...]
+        # Binned weights and jacobian are used in the solution
+        randoms_weights_binned = bincount_2d(
+            templates_digitized_r.T,
+            weights=fkp_field.randoms.weights * mask_extremes_r * randoms_mask,  # set extremes weights to 0
+            length=n_bins + 1,
+        )[:, 1:, ...]
 
-    normalization = (fkp_field.data.weights * mask_extremes_d).sum() / (
-        fkp_field.randoms.weights * mask_extremes_r
-    ).sum()  # without the updated data weights: approximate
+        masked_randoms_weights = fkp_field.randoms.weights * mask_extremes_r * randoms_mask
+        masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
+        wt2 = jnp.concatenate([jnp.ones_like(fkp_field.randoms.weights)[..., None], masked_templates_normalized], axis=-1)
 
-    # Ravel everything to take advantage of matrix operations
-    jacobian = jacobian.reshape((-1, jacobian.shape[-1]))
-    randoms_weights_binned = randoms_weights_binned.reshape((-1,))
-    # Precompute a matrix that will be reused
-    transpose_jw = normalization * jacobian.T * randoms_weights_binned  # matrix product with diag matrix is just numpy product with the diag vector
-    factor = jnp.linalg.inv(transpose_jw.dot(jacobian)).dot(transpose_jw)
-    constant = normalization * factor.dot(randoms_weights_binned)
+        jacobian = bincount_2d(
+            templates_digitized_r.T,
+            weights=masked_randoms_weights[:, None] * wt2,
+            length=n_bins + 1,
+        )[:, 1:, ...]
+
+        normalization = (
+            fkp_field.data.weights * mask_extremes_d * data_mask
+        ).sum() / masked_randoms_weights.sum()  # without the updated data weights: approximate
+
+        # Ravel everything to take advantage of matrix operations
+        jacobian = jacobian.reshape((-1, jacobian.shape[-1]))
+        randoms_weights_binned = randoms_weights_binned.reshape((-1,))
+        # Precompute a matrix that will be reused
+        transpose_jw = normalization * jacobian.T * randoms_weights_binned  # matrix product with diag matrix is just numpy product with the diag vector
+        factor = jnp.linalg.inv(transpose_jw.dot(jacobian)).dot(transpose_jw)
+        constant = normalization * factor.dot(randoms_weights_binned)
+
+        data_regions.append(data_mask)
+        factors.append(factor)
+        constants.append(constant)
 
     # pre-computed templates
     data_templates_digitized = templates_digitized_d
@@ -179,14 +217,16 @@ def prepare_AMR_FKP(
         data_templates_digitized=data_templates_digitized,
         mask_extremes_in_data=mask_extremes_d,
         data_templates_normalized=data_templates_normalized,
-        factor=factor,
-        constant=constant,
+        data_regions=data_regions,
+        factors=factors,
+        constants=constants,
         n_bins=n_bins,
     )
 
 
 def prepare_RIC_FKP(
     fkp_field: FKPField,
+    regions: list[str],
     boxcenter: jnp.ndarray,
     boxsize: jnp.ndarray,
     # RIC specific parameters
@@ -219,7 +259,21 @@ def prepare_RIC_FKP(
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
 
-    randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=fkp_field.randoms.weights, length=n_bins + 1)[1:]
+    # region selection
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_regions = []
+    randoms_regions = []
+    randoms_weights_binned = []
+    for region in regions:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_weights_binned.append(jnp.bincount(randoms_distances_digitized, weights=fkp_field.randoms.weights * randoms_mask, length=n_bins + 1)[1:])
+        data_regions.append(data_mask)
+        randoms_regions.append(randoms_mask)
 
     data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
     randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
@@ -228,13 +282,18 @@ def prepare_RIC_FKP(
     return RICArgsFKP(
         data_distances_digitized=data_distances_digitized,
         randoms_weights_binned=randoms_weights_binned,
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
         data_to_remove=data_to_remove[data_distances_digitized - 1],
+        regions=regions,
         n_bins=n_bins,
     )
 
 
 def prepare_NAM_FKP(
     fkp_field: FKPField,
+    redshifts: tuple[jnp.ndarray, jnp.ndarray],
+    regions_zranges: list[tuple[str, tuple[float, float]]],
     # RIC specific parameters
     nside: int,
 ) -> NAMArgsFKP:
@@ -271,9 +330,33 @@ def prepare_NAM_FKP(
     if sharding_mesh.axis_names:
         vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
+    # Select the regions
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_redshift = redshifts[0]
+    randoms_redshift = redshifts[1]
+
     data_pixels = vec2pix(fkp_field.data.positions)
     randoms_pixels = vec2pix(fkp_field.randoms.positions)
-    randoms_weights_binned = jnp.bincount(randoms_pixels, weights=fkp_field.randoms.weights, length=12 * nside**2)
+
+    data_regions = []
+    randoms_regions = []
+    randoms_weights_binned = []
+
+    for region, (zmin, zmax) in regions_zranges:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
+
+        randoms_weights_binned.append(jnp.bincount(randoms_pixels, weights=fkp_field.randoms.weights * randoms_mask, length=12 * nside**2))
+        data_regions.append(data_mask)
+        randoms_regions.append(randoms_mask)
 
     data_pixels_counts = jnp.bincount(data_pixels, weights=None, length=12 * nside**2)
     randoms_pixels_counts = jnp.bincount(randoms_pixels, weights=None, length=12 * nside**2)
@@ -284,6 +367,8 @@ def prepare_NAM_FKP(
         randoms_pixels=randoms_pixels,
         data_to_remove=data_but_no_randoms[data_pixels],
         randoms_weights_binned=randoms_weights_binned,
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
         nside=nside,
     )
 
@@ -302,6 +387,9 @@ def mock_survey_FKP(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
+    # For region renormalization
+    data_regions: list[jnp.ndarray] | None = None,
+    randoms_regions: list[jnp.ndarray] | None = None,
 ) -> Mesh2SpectrumPoles:
     """
     Get the power spectrum from a mock survey given an input theory, a seed and a set of observational effects.
@@ -328,6 +416,10 @@ def mock_survey_FKP(
         Binning operator to compute the output power spectrum.
     fkp_norm : jnp.ndarray
         Pre-computed power spectrum norm for the FKP field ``fkp_field``, disregarding any future changes in weights.
+    data_regions : list[jnp.ndarray]
+        List of masks for the renormalization regions in the data. Usually "N", "S", or split by galactic caps ("N", "SNGC", "SSGC"). May include DES for quasars.
+    randoms_regions : list[jnp.ndarray]
+        List of masks for the renormalization regions in the randoms. Usually "N", "S", or split by galactic caps ("N", "SNGC", "SSGC"). May include DES for quasars.
 
     Returns
     -------
@@ -353,36 +445,53 @@ def mock_survey_FKP(
     del mesh
     # Apply RIC if necessary
     if ric_args is not None:
-        alpha = data.weights.sum() / randoms.weights.sum()
-        data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights, length=ric_args.n_bins + 1)[1:]
-        ric_weights_binned = jnp.where(
-            data_weights_binned == 0,
-            0.0,  # don't care, will never be applied
-            (alpha * ric_args.randoms_weights_binned / data_weights_binned),
-        )
-        data = data.clone(weights=data.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+        for data_region, randoms_region, randoms_weights_binned in zip(
+            ric_args.data_regions, ric_args.randoms_regions, ric_args.randoms_weights_binned, strict=True
+        ):
+            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=data.weights * data_region, length=ric_args.n_bins + 1)[1:]
+            ric_weights_binned = jnp.where(
+                data_weights_binned == 0,
+                0.0,  # don't care, will never be applied
+                (alpha * randoms_weights_binned / data_weights_binned),
+            )
+            data = data.clone(weights=data.weights * jnp.where(data_region, ric_weights_binned[ric_args.data_distances_digitized - 1], 1.0))
     # Apply mode removal (ie linear template regression) if necessary
     # Randoms weights have not been changed yet
     if amr_args is not None:
-        data_weights_binned = bincount_2d(
-            amr_args.data_templates_digitized.T,
-            weights=data.weights * amr_args.mask_extremes_in_data,
-            length=amr_args.n_bins + 1,
-        )[:, 1:, ...]
-        p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
-        amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
-        data = data.clone(weights=data.weights * amr_weights)
+        for data_region, factor, constant in zip(amr_args.data_regions, amr_args.factors, amr_args.constants, strict=True):
+            data_weights_binned = bincount_2d(
+                amr_args.data_templates_digitized.T,
+                weights=data.weights * amr_args.mask_extremes_in_data * data_region,
+                length=amr_args.n_bins + 1,
+            )[:, 1:, ...]
+            p_opt = factor.dot(data_weights_binned.reshape((-1,))) - constant
+            amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
+            data = data.clone(weights=data.weights * jnp.where(data_region, amr_weights, 1.0))
     # Apply NAM if necessary
     if nam_args is not None:
-        alpha = data.weights.sum() / randoms.weights.sum()
-        data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=data.weights, length=12 * nam_args.nside**2)
-        nam_weights_binned = jnp.where(
-            nam_args.randoms_weights_binned == 0,
-            0.0,  # don't care, will never be applied
-            data_weights_binned / (alpha * nam_args.randoms_weights_binned),
-        )
-        randoms = randoms.clone(weights=randoms.weights * nam_weights_binned[nam_args.randoms_pixels])
+        for data_region, randoms_region, randoms_weights_binned in zip(
+            nam_args.data_regions, nam_args.randoms_regions, nam_args.randoms_weights_binned, strict=True
+        ):
+            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=jnp.where(data_region, data.weights, 0.0), length=12 * nam_args.nside**2)
+            nam_weights_binned = jnp.where(
+                randoms_weights_binned == 0,
+                0.0,  # don't care, will never be applied
+                data_weights_binned / (alpha * randoms_weights_binned),
+            )
+            randoms = randoms.clone(weights=randoms.weights * jnp.where(randoms_region, nam_weights_binned[nam_args.randoms_pixels], 1.0))
     # Paint to mesh for P(k) computation and build FKP mesh
+    if randoms_regions is not None:
+        # global randoms renormalization per region
+        global_alpha = data.weights.sum() / randoms.weights.sum()
+        correction = jnp.ones_like(randoms.weights)
+        for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
+            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            # Multiply by one outside mask and alpha/global_alpha inside
+            correction *= jnp.where(randoms_region, alpha / global_alpha, 1.0)
+            # jnp.invert(randoms_region) * 1.0 + randoms_region * alpha / global_alpha
+        randoms = randoms.clone(weights=randoms.weights * correction)
     fkp_field = fkp_field.clone(data=data, randoms=randoms)
     num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
     fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
@@ -406,6 +515,9 @@ def mock_surveys_FKP(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
+    # For region renormalization
+    data_regions: list[jnp.ndarray] | None = None,
+    randoms_regions: list[jnp.ndarray] | None = None,
 ) -> list[Mesh2SpectrumPoles]:
     """
     Get the power spectra from different mock surveys given one input theory, one seed and different sets of observational effects.
@@ -428,6 +540,10 @@ def mock_surveys_FKP(
         Binning operator to compute the output power spectrum.
     fkp_norm : jnp.ndarray
         Pre-computed power spectrum norm for the FKP field ``fkp_field``, disregarding any future changes in weights.
+    data_regions : list[jnp.ndarray]
+        List of masks for the renormalization regions in the data. Usually "N", "S", or split by galactic caps ("N", "SNGC", "SSGC"). May include DES for quasars.
+    randoms_regions : list[jnp.ndarray]
+        List of masks for the renormalization regions in the randoms. Usually "N", "S", or split by galactic caps ("N", "SNGC", "SSGC"). May include DES for quasars.
 
     Returns
     -------
@@ -459,35 +575,52 @@ def mock_surveys_FKP(
         rrandoms = randoms.clone()
         # Apply RIC if necessary
         if ric_args is not None:
-            alpha = ddata.weights.sum() / rrandoms.weights.sum()
-            data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=ddata.weights, length=ric_args.n_bins + 1)[1:]
-            ric_weights_binned = jnp.where(
-                data_weights_binned == 0,
-                0.0,  # don't care, will never be applied
-                (alpha * ric_args.randoms_weights_binned / data_weights_binned),
-            )
-            ddata = ddata.clone(weights=ddata.weights * ric_weights_binned[ric_args.data_distances_digitized - 1])
+            for data_region, randoms_region, randoms_weights_binned in zip(
+                ric_args.data_regions, ric_args.randoms_regions, ric_args.randoms_weights_binned, strict=True
+            ):
+                alpha = jnp.where(data_region, ddata.weights, 0.0).sum() / jnp.where(randoms_region, rrandoms.weights, 0.0).sum()
+                data_weights_binned = jnp.bincount(ric_args.data_distances_digitized, weights=ddata.weights * data_region, length=ric_args.n_bins + 1)[1:]
+                ric_weights_binned = jnp.where(
+                    data_weights_binned == 0,
+                    0.0,  # don't care, will never be applied
+                    (alpha * randoms_weights_binned / data_weights_binned),
+                )
+                ddata = ddata.clone(weights=ddata.weights * jnp.where(data_region, ric_weights_binned[ric_args.data_distances_digitized - 1], 1.0))
         # Apply mode removal (ie linear template regression) if necessary
         # Randoms weights have not been changed yet
         if amr_args is not None:
-            data_weights_binned = bincount_2d(
-                amr_args.data_templates_digitized.T,
-                weights=ddata.weights * amr_args.mask_extremes_in_data,
-                length=amr_args.n_bins + 1,
-            )[:, 1:, ...]
-            p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
-            amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
-            ddata = ddata.clone(weights=ddata.weights * amr_weights)
+            for data_region, factor, constant in zip(amr_args.data_regions, amr_args.factors, amr_args.constants, strict=True):
+                data_weights_binned = bincount_2d(
+                    amr_args.data_templates_digitized.T,
+                    weights=ddata.weights * amr_args.mask_extremes_in_data * data_region,
+                    length=amr_args.n_bins + 1,
+                )[:, 1:, ...]
+                p_opt = factor.dot(data_weights_binned.reshape((-1,))) - constant
+                amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
+                ddata = ddata.clone(weights=data.weights * jnp.where(data_region, amr_weights, 1.0))
         # Apply NAM if necessary, to randoms
         if nam_args is not None:
-            alpha = ddata.weights.sum() / rrandoms.weights.sum()
-            data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=ddata.weights, length=12 * nam_args.nside**2)
-            nam_weights_binned = jnp.where(
-                nam_args.randoms_weights_binned == 0,
-                0.0,  # don't care, will never be applied
-                data_weights_binned / (alpha * nam_args.randoms_weights_binned),
-            )
-            rrandoms = rrandoms.clone(weights=rrandoms.weights * nam_weights_binned[nam_args.randoms_pixels])
+            for data_region, randoms_region, randoms_weights_binned in zip(
+                nam_args.data_regions, nam_args.randoms_regions, nam_args.randoms_weights_binned, strict=True
+            ):
+                alpha = jnp.where(data_region, ddata.weights, 0.0).sum() / jnp.where(randoms_region, rrandoms.weights, 0.0).sum()
+                data_weights_binned = jnp.bincount(nam_args.data_pixels, weights=jnp.where(data_region, ddata.weights, 0.0), length=12 * nam_args.nside**2)
+                nam_weights_binned = jnp.where(
+                    randoms_weights_binned == 0,
+                    0.0,  # don't care, will never be applied
+                    data_weights_binned / (alpha * randoms_weights_binned),
+                )
+                rrandoms = rrandoms.clone(weights=rrandoms.weights * jnp.where(randoms_region, nam_weights_binned[nam_args.randoms_pixels], 1.0))
+        if randoms_regions is not None:
+            # global randoms renormalization per region
+            global_alpha = ddata.weights.sum() / rrandoms.weights.sum()
+            correction = jnp.ones_like(rrandoms.weights)
+            for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
+                alpha = jnp.where(data_region, ddata.weights, 0.0).sum() / jnp.where(randoms_region, rrandoms.weights, 0.0).sum()
+                # Multiply by one outside mask and alpha/global_alpha inside
+                correction *= jnp.where(randoms_region, alpha / global_alpha, 1.0)
+                # jnp.invert(randoms_region) * 1.0 + randoms_region * alpha / global_alpha
+            rrandoms = rrandoms.clone(weights=rrandoms.weights * correction)
         fkpfield = fkp_field.clone(data=ddata, randoms=rrandoms)
         num_shotnoise = compute_fkp2_shotnoise(fkpfield, bin=binner)
         fkp_mesh = fkpfield.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
