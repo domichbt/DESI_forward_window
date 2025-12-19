@@ -549,14 +549,15 @@ def mock_surveys_FKP(
         # Apply mode removal (ie linear template regression) if necessary
         # Randoms weights have not been changed yet
         if amr_args is not None:
-            data_weights_binned = bincount_2d(
-                amr_args.data_templates_digitized.T,
-                weights=ddata.weights * amr_args.mask_extremes_in_data,
-                length=amr_args.n_bins + 1,
-            )[:, 1:, ...]
-            p_opt = amr_args.factor.dot(data_weights_binned.reshape((-1,))) - amr_args.constant
-            amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
-            ddata = ddata.clone(weights=ddata.weights * amr_weights)
+            for data_region, factor, constant in zip(amr_args.data_regions, amr_args.factors, amr_args.constants, strict=True):
+                data_weights_binned = bincount_2d(
+                    amr_args.data_templates_digitized.T,
+                    weights=ddata.weights * amr_args.mask_extremes_in_data * data_region,
+                    length=amr_args.n_bins + 1,
+                )[:, 1:, ...]
+                p_opt = factor.dot(data_weights_binned.reshape((-1,))) - constant
+                amr_weights = 1 / (1 + p_opt[0] + amr_args.data_templates_normalized.dot(p_opt[1:]))
+                ddata = ddata.clone(weights=data.weights * jnp.where(data_region, amr_weights, 1.0))
         # Apply NAM if necessary, to randoms
         if nam_args is not None:
             alpha = ddata.weights.sum() / rrandoms.weights.sum()
