@@ -267,9 +267,7 @@ def prepare_RIC_FKP(
     for region in regions:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
         randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
-        randoms_weights_binned.append(
-            jnp.bincount(randoms_distances_digitized[randoms_mask], weights=fkp_field.randoms.weights[randoms_mask], length=n_bins + 1)[1:]
-        )
+        randoms_weights_binned.append(jnp.bincount(randoms_distances_digitized, weights=fkp_field.randoms.weights * randoms_mask, length=n_bins + 1)[1:])
         data_regions.append(data_mask)
         randoms_regions.append(randoms_mask)
 
