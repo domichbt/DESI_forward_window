@@ -646,6 +646,27 @@ def mock_survey_mesh(
     """
     Apply mesh-based geometry forward modeling to a theoretical power spectrum.
 
+    Parameters
+    ----------
+    theory : ObservableTree
+        Theory power spectrum to "observe".
+    seed : jnp.ndarray
+        Jax random key for the mesh generation.
+    los : Literal["local", "x", "y", "z"]
+        Line of sight for the mock generation.
+    unitary_amplitude : bool
+        If ``True``, normalize the mock's amplitude to be unitary.
+    binner : BinMesh2SpectrumPoles
+        Binning operator to compute the output power spectrum.
+    norm : jnp.array
+        Pre-computed normalization.
+    selection : RealMeshField
+        Survey selection function, i.e. pre-painted randoms catalogs.
+    shotnoise : float
+        Shotnoise associated to the selection.
+    ric : bool
+        Whether to apply radial integral constraint.
+
     Returns
     -------
     Mesh2SpectrumPoles
