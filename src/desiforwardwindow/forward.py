@@ -642,6 +642,7 @@ def mock_survey_mesh(
     # selection
     selection: RealMeshField,
     ric: bool,
+    nbins: int = 1000,
 ) -> Mesh2SpectrumPoles:
     """
     Apply mesh-based geometry forward modeling to a theoretical power spectrum.
@@ -666,6 +667,8 @@ def mock_survey_mesh(
         Shotnoise associated to the selection.
     ric : bool
         Whether to apply radial integral constraint.
+    nbins : int
+        Number of radial bins for the RIC.
 
     Returns
     -------
@@ -687,7 +690,7 @@ def mock_survey_mesh(
     if ric:
         dmin = jnp.min(mattrs.boxcenter - mattrs.boxsize / 2.0)
         dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((mattrs.boxcenter + mattrs.boxsize / 2.0) ** 2))
-        edges = jnp.linspace(dmin, dmax, 1000)
+        edges = jnp.linspace(dmin, dmax, nbins)
         rnorm = jnp.sqrt(sum(xx**2 for xx in mattrs.rcoords(sparse=True)))
         ibin = jnp.digitize(rnorm, edges, right=False)
         bw = jnp.bincount(ibin.ravel(), weights=mesh.ravel(), length=len(edges) + 1)
