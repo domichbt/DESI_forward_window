@@ -643,6 +643,8 @@ def mock_survey_mesh(
     selection: RealMeshField,
     ric: bool,
     nbins: int = 1000,
+    # regions
+    ric_regions: list[jax.Array] | None = None,
 ) -> Mesh2SpectrumPoles:
     """
     Apply mesh-based geometry forward modeling to a theoretical power spectrum.
@@ -663,18 +665,23 @@ def mock_survey_mesh(
         Pre-computed normalization.
     selection : RealMeshField
         Survey selection function, i.e. pre-painted randoms catalogs.
-    shotnoise : float
-        Shotnoise associated to the selection.
     ric : bool
         Whether to apply radial integral constraint.
     nbins : int
         Number of radial bins for the RIC.
+    ric_regions : list[jax.Array] | None
+        Optional list of region masks (in the shape of the mesh) where RIC should be performed independently.
 
     Returns
     -------
     Mesh2SpectrumPoles
         Realization of an observation of the theory power spectrum.
+
+    Notes
+    -----
+    Unlike catalog based approaches, there is no data-to-random ratio renormalization per region since there are no randoms.
     """
+    ric_regions = ric_regions or [jnp.ones_like(selection, dtype=bool)]
     # Generate a gaussian mesh mock with exact required theory P(k)
     mattrs = selection.attrs
     mesh = (
@@ -693,10 +700,11 @@ def mock_survey_mesh(
         edges = jnp.linspace(dmin, dmax, nbins)
         rnorm = jnp.sqrt(sum(xx**2 for xx in mattrs.rcoords(sparse=True)))
         ibin = jnp.digitize(rnorm, edges, right=False)
-        bw = jnp.bincount(ibin.ravel(), weights=mesh.ravel(), length=len(edges) + 1)
-        b = jnp.bincount(ibin.ravel(), weights=selection.ravel(), length=len(edges) + 1)
-        # Integral constraint
-        bw = bw / jnp.where(b == 0.0, 1.0, b)  # (integral of W * delta) / (integral of W)
-        mesh -= bw[ibin].reshape(selection.shape) * selection
+        for region in ric_regions:
+            bw = jnp.bincount(ibin.ravel(), weights=(mesh * region).ravel(), length=len(edges) + 1)
+            b = jnp.bincount(ibin.ravel(), weights=(selection * region).ravel(), length=len(edges) + 1)
+            # Integral constraint
+            bw = bw / jnp.where(b == 0.0, 1.0, b)  # (integral of W * delta) / (integral of W)
+            mesh -= bw[ibin].reshape(selection.shape) * selection * region
     pk = compute_mesh2_spectrum(mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
     return pk.clone(norm=norm)
