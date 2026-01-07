@@ -639,8 +639,9 @@ def mock_survey_mesh(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     norm: jnp.array,
-    # selection
-    selection: RealMeshField,
+    # selections
+    selection1: RealMeshField,
+    selection2: RealMeshField,
     ric: bool,
     nbins: int = 1000,
     # regions
@@ -663,8 +664,10 @@ def mock_survey_mesh(
         Binning operator to compute the output power spectrum.
     norm : jnp.array
         Pre-computed normalization.
-    selection : RealMeshField
+    selection1 : RealMeshField
         Survey selection function, i.e. pre-painted randoms catalogs.
+    selection2 : RealMeshField
+        Survey selection function, i.e. pre-painted randoms catalogs. Should be an independent set of randoms with regard to ``selection1`` to avoid shot noise.
     ric : bool
         Whether to apply radial integral constraint.
     nbins : int
@@ -681,19 +684,19 @@ def mock_survey_mesh(
     -----
     Unlike catalog based approaches, there is no data-to-random ratio renormalization per region since there are no randoms.
     """
-    ric_regions = ric_regions or [jnp.ones_like(selection, dtype=bool)]
+    ric_regions = ric_regions or [jnp.ones_like(selection1, dtype=bool)]
     # Generate a gaussian mesh mock with exact required theory P(k)
-    mattrs = selection.attrs
-    mesh = (
-        generate_anisotropic_gaussian_mesh(
-            mattrs,
-            poles=theory,
-            seed=seed,
-            los=los,
-            unitary_amplitude=unitary_amplitude,
-        )
-        * selection
+    mattrs = selection1.attrs
+    _mesh = generate_anisotropic_gaussian_mesh(
+        mattrs,
+        poles=theory,
+        seed=seed,
+        los=los,
+        unitary_amplitude=unitary_amplitude,
     )
+    mesh1 = _mesh * selection1
+    mesh2 = _mesh * selection2
+    del _mesh
     if ric:
         dmin = jnp.min(mattrs.boxcenter - mattrs.boxsize / 2.0)
         dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((mattrs.boxcenter + mattrs.boxsize / 2.0) ** 2))
@@ -701,10 +704,14 @@ def mock_survey_mesh(
         rnorm = jnp.sqrt(sum(xx**2 for xx in mattrs.rcoords(sparse=True)))
         ibin = jnp.digitize(rnorm, edges, right=False)
         for region in ric_regions:
-            bw = jnp.bincount(ibin.ravel(), weights=(mesh * region).ravel(), length=len(edges) + 1)
-            b = jnp.bincount(ibin.ravel(), weights=(selection * region).ravel(), length=len(edges) + 1)
+            bw1 = jnp.bincount(ibin.ravel(), weights=(mesh1 * region).ravel(), length=len(edges) + 1)
+            b1 = jnp.bincount(ibin.ravel(), weights=(selection1 * region).ravel(), length=len(edges) + 1)
+            bw2 = jnp.bincount(ibin.ravel(), weights=(mesh2 * region).ravel(), length=len(edges) + 1)
+            b2 = jnp.bincount(ibin.ravel(), weights=(selection2 * region).ravel(), length=len(edges) + 1)
             # Integral constraint
-            bw = bw / jnp.where(b == 0.0, 1.0, b)  # (integral of W * delta) / (integral of W)
-            mesh -= bw[ibin].reshape(selection.shape) * selection * region
-    pk = compute_mesh2_spectrum(mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
+            bw1 = bw1 / jnp.where(b1 == 0.0, 1.0, b1)  # (integral of W * delta) / (integral of W)
+            mesh1 -= bw1[ibin].reshape(selection1.shape) * selection1 * region
+            bw2 = bw2 / jnp.where(b2 == 0.0, 1.0, b2)  # (integral of W * delta) / (integral of W)
+            mesh2 -= bw2[ibin].reshape(selection2.shape) * selection2 * region
+    pk = compute_mesh2_spectrum(mesh1, mesh2, bin=binner, los={"local": "firstpoint"}.get(los, los))
     return pk.clone(norm=norm)
