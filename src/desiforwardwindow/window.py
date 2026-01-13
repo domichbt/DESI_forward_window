@@ -132,9 +132,9 @@ def get_window_spikes(
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
-    for imock in tqdm(range(nreal), desc="Realization"):
+    for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})"):
+        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
             spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_survey=mock_survey, **mock_survey_kw).T
