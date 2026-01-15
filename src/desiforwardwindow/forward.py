@@ -532,6 +532,160 @@ def apply_RIC(
     return ric_weights.sum(axis=range(ric_weights.ndim - 1))
 
 
+AMR_args = make_jax_dataclass(
+    class_name="AMR_args",
+    dynamic_fields=[
+        "data_regions",
+        "randoms_regions",
+        "data_extremes",
+        "randoms_extremes",
+        "data_templates_digitized",
+        "randoms_templates_digitized",
+        "data_templates_normalized",
+        "randoms_templates_normalized",
+    ],
+    aux_fields=["n_bins", "apply_to"],
+    types_fields={
+        "data_regions": jax.Array,
+        "randoms_regions": jax.Array,
+        "data_extremes": jax.Array,
+        "randoms_extremes": jax.Array,
+        "data_templates_digitized": jax.Array,
+        "randoms_templates_digitized": jax.Array,
+        "data_templates_normalized": jax.Array,
+        "randoms_templates_normalized": jax.Array,
+        "n_bins": int,
+        "apply_to": Literal["data", "randoms"],
+    },
+)
+
+
+def prepare_AMR(
+    fkp_field: FKPField,
+    redshifts: tuple[jnp.ndarray, jnp.ndarray],
+    regions_zranges: list[tuple[str, tuple[float, float]]],
+    apply_to: Literal["data", "randoms"],
+    # AMR specific data
+    template_values_data: jnp.ndarray,
+    template_values_randoms: jnp.ndarray,
+    # AMR specific parameters
+    tail: float = 0.5,
+    bin_margin: float = 1e-7,
+    n_bins: int = 10,
+) -> AMR_args:
+    """
+    Precompute all arguments necessary to get Angular Mode Removal in :py:func:`mock_survey_FKP`.
+
+    Parameters
+    ----------
+    fkp_field : ParticleField
+        Field containing positions and weights of all the particles.
+    template_values_data : jnp.ndarray
+        Values of the templates for the data.
+    template_values_randoms : jnp.ndarray
+        Values of the templates for the randoms.
+    tail : float, optional
+        Percentile of the (random's) template value distribution to remove, by default 0.5
+    bin_margin : float, optional
+        Margin on the side of edges, by default 1e-7
+    n_bins : int, optional
+        Number of bins for each template in the regression, by default 10
+
+    Returns
+    -------
+    AMRArgsFKP
+        Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
+    """
+    # Select the regions
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_redshift = redshifts[0]
+    randoms_redshift = redshifts[1]
+
+    templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
+    templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
+
+    mask_extremes_r = jnp.invert(
+        jnp.any(
+            (template_values_randoms < templates_lower_tails).T | (template_values_randoms > templates_upper_tails).T,
+            axis=0,
+        )
+    )
+
+    mask_extremes_d = jnp.invert(
+        jnp.any(
+            (template_values_data < templates_lower_tails).T | (template_values_data > templates_upper_tails).T,
+            axis=0,
+        )
+    )
+
+    bin_edges = jnp.linspace(
+        start=templates_lower_tails - bin_margin,
+        stop=templates_upper_tails + bin_margin,
+        num=n_bins + 1,
+    )
+
+    templates_normalized_r = (template_values_randoms - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+    templates_normalized_d = (template_values_data - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+
+    templates_digitized_r = jnp.clip(
+        jnp.floor(templates_normalized_r * n_bins).astype(int) - (templates_normalized_r == bin_edges[-1, :]) + 1,
+        min=0,
+        max=n_bins + 1,
+    )
+
+    templates_digitized_d = jnp.clip(
+        jnp.floor(templates_normalized_d * n_bins).astype(int) - (templates_normalized_d == bin_edges[-1, :]) + 1,
+        min=0,
+        max=n_bins + 1,
+    )
+
+    data_regions = []
+    randoms_regions = []
+
+    for region, (zmin, zmax) in regions_zranges:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
+
+        data_regions.append(data_mask)
+        randoms_regions.append(randoms_mask)
+
+    # pre-computed templates
+    data_templates_digitized = jnp.vstack(
+        [jnp.full(shape=fkp_field.data.weights.shape, dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
+    )
+    data_templates_normalized = jnp.vstack([jnp.ones_like(fkp_field.data.weights), templates_normalized_d.T])
+
+    randoms_templates_digitized = jnp.vstack(
+        [jnp.full(shape=fkp_field.randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1) * (n_bins - 1), templates_digitized_r.T]
+    )
+    if apply_to == "randoms":
+        randoms_templates_normalized = jnp.vstack([jnp.ones_like(fkp_field.randoms.weights), templates_normalized_r.T])
+    else:
+        randoms_templates_normalized = None
+
+    return AMR_args(
+        data_regions=jnp.stack(data_regions),
+        randoms_regions=jnp.stack(randoms_regions),
+        data_extremes=mask_extremes_d,
+        randoms_extremes=mask_extremes_r,
+        data_templates_digitized=data_templates_digitized,
+        randoms_templates_digitized=randoms_templates_digitized,
+        data_templates_normalized=data_templates_normalized,
+        randoms_templates_normalized=randoms_templates_normalized,
+        n_bins=n_bins,
+        apply_to=apply_to,
+    )
+
+
 @jax.jit(static_argnames=["n_bins", "apply_to"])
 def apply_AMR(
     data_weights: jax.Array,
@@ -643,7 +797,7 @@ def mock_survey_catalog(
     # Data catalog and effects
     fkp_field: FKPField,
     ric_args: RIC_args | None,
-    # amr_args: AMR_args | None,
+    amr_args: AMR_args | None,
     # nam_args: NAM_args | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
@@ -665,7 +819,7 @@ def mock_survey_catalog(
     data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
     randoms = fkp_field.randoms
     del mesh
-    # Apply RIC if necessary
+
     if ric_args is not None:
         ric_weights = apply_RIC(
             data_weights=data.weights,
@@ -681,6 +835,26 @@ def mock_survey_catalog(
             data = data.clone(weights=data.weights * ric_weights)
         else:
             randoms = randoms.clone(weights=randoms.weights * ric_weights)
+
+    if amr_args is not None:
+        amr_weights = apply_AMR(
+            data_weights=data.weights,
+            randoms_weights=randoms.weights,
+            data_regions=amr_args.data_regions,
+            randoms_regions=amr_args.randoms_regions,
+            data_extremes=amr_args.data_extremes,
+            randoms_extremes=amr_args.randoms_extremes,
+            data_templates_digitized=amr_args.data_templates_digitized,
+            randoms_templates_digitized=amr_args.randoms_templates_digitized,
+            data_templates_normalized=amr_args.data_templates_normalized,
+            randoms_templates_normalized=amr_args.randoms_templates_normalized,
+            n_bins=amr_args.n_bins,
+            apply_to=amr_args.apply_to,
+        )
+        if amr_args.apply_to == "data":
+            data = data.clone(weights=data.weights * amr_weights)
+        else:
+            randoms = randoms.clone(weights=randoms.weights * amr_weights)
 
     # global randoms renormalization per region
     if randoms_regions is not None:
