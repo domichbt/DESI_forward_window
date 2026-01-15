@@ -4,7 +4,7 @@ version = "0.0.1"
 dependencies = [
     "jax",
     "lsstypes @ git+https://github.com/adematti/lsstypes",
-    "jaxpower @ git+https://github.com/adematti/jax-power",
+    "jax-power @ git+https://github.com/adematti/jax-power",
 ]
 readme = "README.md"
 requires-python = ">=3.10"
