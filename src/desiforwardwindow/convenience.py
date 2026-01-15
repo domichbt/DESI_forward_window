@@ -6,6 +6,7 @@ from typing import Literal
 
 import numpy as np
 from astropy.table import Table
+from jaxpower import MeshAttrs, ParticleField
 from jaxpower.types import ObservableLeaf, ObservableTree
 
 from .utils import get_clustering_positions_weights
@@ -182,3 +183,45 @@ def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | 
             sysmaps["SKY_RES_Z"] = sky_z[region]
 
     return sysmaps
+
+
+def split_into_fields(
+    positions: np.ndarray,
+    weights: np.ndarray,
+    data_size: int,
+    split_seed: int,
+    mattrs: MeshAttrs,
+    backend: Literal["jax", "mpi"] = "jax",
+    exchange: bool = True,
+) -> tuple[ParticleField, ParticleField]:
+    """
+    Split particles into two particle fields.
+
+    Parameters
+    ----------
+    positions : np.ndarray
+        Particle positions.
+    weights : np.ndarray
+        Particle weights.
+    data_size : int
+        Number of particles to use as "data".
+    split_seed : int
+        Seed to use for the split into "data" and "randoms".
+    mattrs : MeshAttrs
+        Mesh attributes for the fields.
+    backend : Literal["jax", "mpi"], optional
+        Backend to use for exchanging particles (if any), by default "jax"
+    exchange : bool, optional
+        Whether to exchange particles, by default True
+
+    Returns
+    -------
+    tuple[ParticleField, ParticleField]
+        Data and randoms fields.
+    """
+    rng = np.random.default_rng(seed=split_seed)
+    randoms_size = weights.size - data_size
+    mask_is_data = rng.uniform(size=(randoms_size + data_size)) < (data_size / (data_size + randoms_size))
+    data = ParticleField(positions[mask_is_data], weights=weights[mask_is_data], attrs=mattrs, exchange=exchange, backend=backend)
+    randoms = ParticleField(positions[~mask_is_data], weights=weights[~mask_is_data], attrs=mattrs, exchange=exchange, backend=backend)
+    return data, randoms
