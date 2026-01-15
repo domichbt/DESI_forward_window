@@ -193,7 +193,7 @@ def split_into_fields(
     mattrs: MeshAttrs,
     backend: Literal["jax", "mpi"] = "jax",
     exchange: bool = True,
-) -> tuple[ParticleField, ParticleField]:
+) -> tuple[ParticleField, ParticleField, np.ndarray]:
     """
     Split particles into two particle fields.
 
@@ -216,12 +216,12 @@ def split_into_fields(
 
     Returns
     -------
-    tuple[ParticleField, ParticleField]
-        Data and randoms fields.
+    tuple[ParticleField, ParticleField, np.ndarray]
+        Data and randoms fields, as well as the mask for selecting the data.
     """
     rng = np.random.default_rng(seed=split_seed)
     randoms_size = weights.size - data_size
     mask_is_data = rng.uniform(size=(randoms_size + data_size)) < (data_size / (data_size + randoms_size))
     data = ParticleField(positions[mask_is_data], weights=weights[mask_is_data], attrs=mattrs, exchange=exchange, backend=backend)
     randoms = ParticleField(positions[~mask_is_data], weights=weights[~mask_is_data], attrs=mattrs, exchange=exchange, backend=backend)
-    return data, randoms
+    return data, randoms, mask_is_data
