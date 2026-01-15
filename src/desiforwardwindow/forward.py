@@ -375,12 +375,18 @@ def prepare_NAM_FKP(
 
 @jax.jit(static_argnames=["n_bins", "apply_to"])
 def apply_RIC(data_weights, randoms_weights, data_regions, randoms_regions, data_distances_digitized, randoms_distances_digitized, n_bins, apply_to="data"):
-    # TODO Based on switch, redefine "data" and "randoms", invert if needed, and then apply computations without an if
     # TODO LOOPS SHOULD BE VMAPS !!!! I'm using all the space anyways
     if apply_to == "data":
         ric_weights_global = jnp.zeros_like(data_weights)
+        data_weights, randoms_weights = data_weights, randoms_weights
+        data_regions, randoms_regions = data_regions, randoms_regions
+        data_distances_digitized, randoms_distances_digitized = data_distances_digitized, randoms_distances_digitized
+
     elif apply_to == "randoms":
         ric_weights_global = jnp.zeros_like(randoms_weights)
+        data_weights, randoms_weights = randoms_weights, data_weights
+        data_regions, randoms_regions = randoms_regions, data_regions
+        data_distances_digitized, randoms_distances_digitized = randoms_distances_digitized, data_distances_digitized
     else:
         raise ValueError("Can only apply to randoms or data!")
 
@@ -389,20 +395,12 @@ def apply_RIC(data_weights, randoms_weights, data_regions, randoms_regions, data
         data_weights_binned = jnp.bincount(data_distances_digitized, weights=data_weights * data_region, length=n_bins + 1)[1:]
         randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights * randoms_region, length=n_bins + 1)[1:]
 
-        if apply_to == "data":
-            ric_weights_binned = jnp.where(
-                data_weights_binned == 0,
-                0.0,  # don't care, will never be applied
-                (alpha * randoms_weights_binned / data_weights_binned),
-            )
-            ric_weights_global += jnp.where(data_region, ric_weights_binned[data_distances_digitized - 1], 0.0)
-        elif apply_to == "randoms":
-            ric_weights_binned = jnp.where(
-                randoms_weights_binned == 0,
-                0.0,  # don't care, will never be applied
-                data_weights_binned / (alpha * randoms_weights_binned),
-            )
-            ric_weights_global += jnp.where(randoms_region, ric_weights_binned[randoms_distances_digitized - 1], 0.0)
+        ric_weights_binned = jnp.where(
+            data_weights_binned == 0,
+            0.0,  # don't care, will never be applied
+            (alpha * randoms_weights_binned / data_weights_binned),
+        )
+        ric_weights_global += jnp.where(data_region, ric_weights_binned[data_distances_digitized - 1], 0.0)
     return ric_weights_global
 
 
