@@ -16,7 +16,33 @@ footprint = None
 
 @jax.jit
 def _my_bincount(idx, accumulator, weights):
-    return accumulator.at[idx].add(weights)[:-1]
+    return accumulator.at[..., idx].add(weights)[..., :-1]
+
+
+def bincount(x: jax.Array, weights: jax.Array, minlength: int = 0, length: int | None = None) -> jax.Array:
+    """
+    Perform a bincount over a 1D integer array (like :py:func:`jax.numpy.bincount`), allowing n-D weights.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Array of integers of shape (n,).
+    weights : jax.Array
+        Corresponding weights of shape (..., n).
+    minlength : int, optional
+        A minimum number of bins for the output array, by default 0.
+    length : int or None, optional
+        Optional fixed length for the output array. Must be set for ``jax.jit`` compatibility.
+
+    Returns
+    -------
+    jax.Array
+        Array of shape (..., ``length``).
+    """
+    if length is None:
+        length = max(x.max() + 1, minlength)
+    accumulator = jnp.zeros((*weights.shape[:-1], length + 1), dtype=weights.dtype)
+    return _my_bincount(x, accumulator, weights)
 
 
 def bincount_2d(x: jnp.ndarray, weights: jnp.ndarray, minlength: int = 0, length: int | None = None) -> jnp.ndarray:
