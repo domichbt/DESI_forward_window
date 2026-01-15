@@ -1,6 +1,5 @@
 """Forward modeling of observational effects."""
 
-from functools import partial
 from typing import Literal
 
 import jax
@@ -15,7 +14,7 @@ from jaxpower import (
 )
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
-from .utils import bincount_2d, make_jax_dataclass, select_region
+from .utils import bincount, bincount_2d, make_jax_dataclass, select_region
 
 AMRArgsFKP = make_jax_dataclass(
     class_name="AMRArgsFKP",
@@ -419,7 +418,10 @@ def apply_RIC(
 
     Notes
     -----
-    ``n_bins`` cannot be inferred dynamically, otherwise the function would not be compatible with ``jax.jit``.
+    * ``n_bins`` cannot be inferred dynamically, otherwise the function would not be compatible with ``jax.jit``.
+    * Region masks must be perfectly complementary with complete coverage of the particles.
+        * For uncovered particles, the returned weight will be 0
+        * For doubly covered particles, the returned weight will be the sum of the weights in each region
     """
     if apply_to == "data":
         pass
@@ -429,29 +431,18 @@ def apply_RIC(
         data_distances_digitized, randoms_distances_digitized = randoms_distances_digitized, data_distances_digitized
     else:
         raise ValueError("Can only apply to randoms or data!")
-    return _apply_RIC(
-        data_weights,
-        randoms_weights,
-        data_regions,
-        randoms_regions,
-        data_distances_digitized,
-        randoms_distances_digitized,
-        n_bins,
-    ).sum(axis=0)
 
-
-@partial(jax.vmap, in_axes=(None, None, 0, 0, None, None, None))
-def _apply_RIC(data_weights, randoms_weights, data_region, randoms_region, data_distances_digitized, randoms_distances_digitized, n_bins):
-    alpha = jnp.where(data_region, data_weights, 0.0).sum() / jnp.where(randoms_region, randoms_weights, 0.0).sum()
-    data_weights_binned = jnp.bincount(data_distances_digitized, weights=data_weights * data_region, length=n_bins + 1)[1:]
-    randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights * randoms_region, length=n_bins + 1)[1:]
-
+    # alphas of shape (r,): sum over last axis = n
+    alphas = (data_weights * data_regions).sum(axis=-1) / (randoms_weights * randoms_regions).sum(axis=-1)
+    data_weights_binned = bincount(data_distances_digitized, weights=data_weights * data_regions, length=n_bins + 1)[..., 1:]
+    randoms_weights_binned = bincount(randoms_distances_digitized, weights=randoms_weights * randoms_regions, length=n_bins + 1)[..., 1:]
     ric_weights_binned = jnp.where(
         data_weights_binned == 0,
         0.0,  # don't care, will never be applied
-        (alpha * randoms_weights_binned / data_weights_binned),
-    )
-    return jnp.where(data_region, ric_weights_binned[data_distances_digitized - 1], 0.0)
+        (alphas[..., None] * randoms_weights_binned / data_weights_binned),
+    )  # NOTE: this is not reverse-differentiation compatible
+    ric_weights = jnp.where(data_regions, ric_weights_binned[..., data_distances_digitized - 1], 0.0)
+    return ric_weights.sum(axis=range(ric_weights.ndim - 1))
 
 
 def mock_survey_FKP(
