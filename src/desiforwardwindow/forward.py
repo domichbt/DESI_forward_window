@@ -373,6 +373,74 @@ def prepare_NAM_FKP(
     )
 
 
+RIC_args = make_jax_dataclass(
+    class_name="RIC_args",
+    dynamic_fields=[
+        "data_distances_digitized",
+        "randoms_distances_digitized",
+        "data_regions",
+        "randoms_regions",
+        "data_to_remove",
+    ],
+    aux_fields=["n_bins", "apply_to"],
+    types_fields={
+        "data_distances_digitized": jax.Array,
+        "randoms_distances_digitized": jax.Array,
+        "data_regions": jax.Array,
+        "randoms_regions": jax.Array,
+        "data_to_remove": jax.Array,
+        "n_bins": int,
+        "apply_to": Literal["data", "randoms"],
+    },
+)
+
+
+def prepare_RIC(
+    fkp_field: FKPField,
+    regions: list[str],
+    boxcenter: jnp.ndarray,
+    boxsize: jnp.ndarray,
+    # RIC specific parameters
+    n_bins: int,
+    apply_to: Literal["data", "randoms"],
+):
+    dmin = jnp.min(boxcenter - boxsize / 2.0)
+    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
+    distance_edges = jnp.linspace(dmin, dmax, n_bins)
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
+    randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
+
+    # region selection
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_regions = []
+    randoms_regions = []
+    for region in regions:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        data_regions.append(data_mask)
+        randoms_regions.append(randoms_mask)
+
+    data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
+    randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
+    data_to_remove = (data_distances_counts != 0) * (randoms_distances_counts == 0)
+
+    return RIC_args(
+        data_distances_digitized=data_distances_digitized,
+        randoms_distances_digitized=randoms_distances_digitized,
+        data_regions=jnp.stack(data_regions),
+        randoms_regions=jnp.stack(randoms_regions),
+        data_to_remove=data_to_remove,
+        n_bins=n_bins,
+        apply_to=apply_to,
+    )
+
+
 @jax.jit(static_argnames=["n_bins", "apply_to"])
 def apply_RIC(
     data_weights: jax.Array,
@@ -546,6 +614,74 @@ def apply_AMR(
         return randoms_regions * (1 + jnp.einsum("in, ri->rn", randoms_templates_normalized, coefficients)).sum(axis=0)  # these are randoms weights
     else:
         raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
+
+
+def mock_survey_catalog(
+    theory: ObservableTree,
+    seed: jnp.ndarray,
+    los: Literal["local", "x", "y", "z"],
+    unitary_amplitude: bool,
+    # Data catalog and effects
+    fkp_field: FKPField,
+    ric_args: RIC_args | None,
+    # amr_args: AMR_args | None,
+    # nam_args: NAM_args | None,
+    # Final P(k) estimation
+    binner: BinMesh2SpectrumPoles,
+    fkp_norm: jnp.ndarray,
+    # For region renormalization
+    data_regions: list[jnp.ndarray] | None = None,
+    randoms_regions: list[jnp.ndarray] | None = None,
+):
+    # don't rename mock_survey_FKP for now, for testing purposes
+    mattrs = fkp_field.attrs
+    mesh = generate_anisotropic_gaussian_mesh(
+        mattrs,
+        poles=theory,
+        seed=seed,
+        los=los,
+        unitary_amplitude=unitary_amplitude,
+    )
+    # Paint it on the catalog -> catalog with geometry and ""clustering""
+    data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
+    randoms = fkp_field.randoms
+    del mesh
+    # Apply RIC if necessary
+    if ric_args is not None:
+        ric_weights = apply_RIC(
+            data_weights=data.weights,
+            randoms_weights=randoms.weights,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+            data_distances_digitized=ric_args.data_distances_digitized,
+            randoms_distances_digitized=ric_args.randoms_distances_digitized,
+            n_bins=ric_args.n_bins,
+            apply_to=ric_args.apply_to,
+        )
+        if ric_args.apply_to == "data":
+            data = data.clone(weights=data.weights * ric_weights)
+        else:
+            randoms = randoms.clone(weights=randoms.weights * ric_weights)
+
+    # global randoms renormalization per region
+    if randoms_regions is not None:
+        global_alpha = data.weights.sum() / randoms.weights.sum()
+        correction = jnp.ones_like(randoms.weights)
+        for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
+            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            # Multiply by one outside mask and alpha/global_alpha inside
+            correction *= jnp.where(randoms_region, alpha / global_alpha, 1.0)
+            # jnp.invert(randoms_region) * 1.0 + randoms_region * alpha / global_alpha
+        randoms = randoms.clone(weights=randoms.weights * correction)
+    fkp_field = fkp_field.clone(data=data, randoms=randoms)
+    num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
+    fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
+    del fkp_field
+    pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
+    return pk.clone(
+        norm=fkp_norm,
+        num_shotnoise=num_shotnoise,
+    )
 
 
 def mock_survey_FKP(
