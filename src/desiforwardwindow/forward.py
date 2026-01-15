@@ -398,12 +398,31 @@ RIC_args = make_jax_dataclass(
 def prepare_RIC(
     fkp_field: FKPField,
     regions: list[str],
-    boxcenter: jnp.ndarray,
-    boxsize: jnp.ndarray,
     # RIC specific parameters
     n_bins: int,
     apply_to: Literal["data", "randoms"],
-):
+) -> RIC_args:
+    """
+    Prepare arguments necessary to applying RIC in :py:func:`mock_survey_catalog`.
+
+    Parameters
+    ----------
+    fkp_field : ParticleField
+        Field containing positions and weights of all the particles.
+    regions : list[str]
+        Regions to split data in.
+    n_bins : int
+        Number of distance bins to use.
+    apply_to : Literal["data", "randoms"]
+        Whether to produce weights to apply to randoms or data.
+
+    Returns
+    -------
+    RIC_args
+        Custom pytree class that contains all necessary information to applying RIC in :py:func:`mock_survey_catalog`.
+    """
+    boxcenter = fkp_field.attrs.boxcenter
+    boxsize = fkp_field.attrs.boxsize
     dmin = jnp.min(boxcenter - boxsize / 2.0)
     dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
     distance_edges = jnp.linspace(dmin, dmax, n_bins)
