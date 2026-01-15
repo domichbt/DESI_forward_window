@@ -445,6 +445,109 @@ def apply_RIC(
     return ric_weights.sum(axis=range(ric_weights.ndim - 1))
 
 
+@jax.jit(static_argnames=["n_bins", "apply_to"])
+def apply_AMR(
+    data_weights: jax.Array,
+    randoms_weights: jax.Array,
+    data_regions: jax.Array,
+    randoms_regions: jax.Array,
+    data_extremes: jax.Array,
+    randoms_extremes: jax.Array,
+    data_templates_digitized: jax.Array,
+    randoms_templates_digitized: jax.Array,
+    data_templates_normalized: jax.Array,
+    randoms_templates_normalized: jax.Array | None = None,
+    n_bins: int = 10,
+    apply_to: Literal["data", "randoms"] = "data",
+) -> jax.Array:
+    """
+    Return imaging systematics correction weights from linearized _à la eBOSS_ style weights.
+
+    Parameters
+    ----------
+    data_weights : jax.Array
+        Input data weights, shape (n_d,).
+    randoms_weights : jax.Array
+        Input randoms weights, shape (n_r,).
+    data_regions : jax.Array
+        Input masks for each region for the data, shape (r, n_d,).
+    randoms_regions : jax.Array
+        Input masks for each region for the data, shape (r, n_r,).
+    data_extremes : jax.Array
+        Mask indicating extreme template values to discard in the data.
+    randoms_extremes : jax.Array
+        Mask indicating extreme template values to discard in the randoms.
+    data_templates_digitized : jax.Array
+        Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ``n_bins - 1`` for the constant term.
+    randoms_templates_digitized : jax.Array
+        Digitized values of the templates for the randoms, shape (n_sys + 1, n_r). First line should be all ``n_bins - 1`` for the constant term.
+    data_templates_normalized : jax.Array
+        Normalized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ones for the constant term.
+    randoms_templates_normalized : jax.Array | None, optional
+        Normalized values of the templates for the randoms, shape (n_sys + 1, n_d). First line should be all ones for the constant term. This only needs to be provided if ``apply_to`` is set to ``"randoms"``. Default is ``None``.
+    n_bins : int, optional
+        Number of bins used for the templates, by default 10.
+    apply_to : Literal["data", "randoms"], optional
+        Whether to get weights to apply to the data or the randoms, by default "data".
+
+    Returns
+    -------
+    jax.Array
+        Weights to multiplicatively apply to either the data or the randoms.
+
+    Raises
+    ------
+    ValueError
+        If ``to_apply`` is unrecognized.
+
+    Notes
+    -----
+     * The regions mask should not contain the extremes, ohterwise the output weights for the extremes will be wrong.
+     * Regions should not overlap, otherwise weights for multi-region particles will be wrong.
+    """
+    data_regions = jnp.atleast_2d(data_regions)
+    randoms_regions = jnp.atleast_2d(randoms_regions)
+
+    data_weights *= jnp.invert(data_extremes)
+    randoms_weights *= jnp.invert(randoms_extremes)
+
+    # offset the output axis by one so that region axis is always first
+    # vmap only takes positional argument, so always explicitly set minlength to the default 0
+    bincount_2d = jax.vmap(bincount, in_axes=(0, None, None, None), out_axes=1)
+
+    # shapes: (regions, N_sys + 1, N_bins + 1)
+    data_binned = bincount_2d(data_templates_digitized, data_weights * data_regions, 0, n_bins + 1)
+    randoms_binned = bincount_2d(randoms_templates_digitized, randoms_weights * randoms_regions, 0, n_bins + 1)
+
+    # shape: (regions, N_sys + 1, N_bins + 1,  N_sys + 1)
+    # The last dimension is for the matrix product with the coefficients vector
+    # The middle (N_sys + 1, N_bins + 1) correspond, in spirit, to one big axis
+    data_templates_binned = bincount_2d(
+        data_templates_digitized, data_weights[None, None, ...] * data_regions[:, None, ...] * data_templates_normalized[None, ...], 0, n_bins + 1
+    ).swapaxes(-1, -2)
+
+    # Directly compute weights / randoms for efficiency
+    # Set weight to 0 where there are no randoms
+    w_over_r = jnp.where(randoms_binned != 0, 1 / (jnp.sqrt(data_binned / randoms_binned**2 + data_binned**2 / randoms_binned**3) * randoms_binned), 0.0)
+
+    X = jnp.einsum("rij,rijp->rijp", w_over_r, data_templates_binned)
+    y = data_binned * w_over_r - 1
+
+    Xty = jnp.einsum("rijp, rij -> rp ", X, y)
+    XtX = jnp.einsum("rijq, rijp -> rpq", X, X)
+
+    # Batch over first dimension (the regions): shape (regions, N_sys + 1)
+    coefficients = jnp.linalg.solve(XtX, Xty[..., None]).squeeze(-1)
+
+    if apply_to == "data":
+        return (data_regions / (1 + jnp.einsum("in, ri->rn", data_templates_normalized, coefficients))).sum(axis=0)  # these are data weights
+    elif apply_to == "randoms":
+        # TODO: check that I'm not saying n'importe nawak for randoms
+        return randoms_regions * (1 + jnp.einsum("in, ri->rn", randoms_templates_normalized, coefficients)).sum(axis=0)  # these are randoms weights
+    else:
+        raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
+
+
 def mock_survey_FKP(
     # Gaussian mock generation
     theory: ObservableTree,
