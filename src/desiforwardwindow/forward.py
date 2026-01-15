@@ -1,5 +1,6 @@
 """Forward modeling of observational effects."""
 
+from functools import partial
 from typing import Literal
 
 import jax
@@ -374,34 +375,83 @@ def prepare_NAM_FKP(
 
 
 @jax.jit(static_argnames=["n_bins", "apply_to"])
-def apply_RIC(data_weights, randoms_weights, data_regions, randoms_regions, data_distances_digitized, randoms_distances_digitized, n_bins, apply_to="data"):
-    # TODO LOOPS SHOULD BE VMAPS !!!! I'm using all the space anyways
-    if apply_to == "data":
-        ric_weights_global = jnp.zeros_like(data_weights)
-        data_weights, randoms_weights = data_weights, randoms_weights
-        data_regions, randoms_regions = data_regions, randoms_regions
-        data_distances_digitized, randoms_distances_digitized = data_distances_digitized, randoms_distances_digitized
+def apply_RIC(
+    data_weights: jax.Array,
+    randoms_weights: jax.Array,
+    data_regions: jax.Array,
+    randoms_regions: jax.Array,
+    data_distances_digitized: jax.Array,
+    randoms_distances_digitized: jax.Array,
+    n_bins: int,
+    apply_to: Literal["data", "randoms"] = "data",
+) -> jax.Array:
+    """
+    Compute weights to apply the radial integral constraint at the catalog level.
 
+    Parameters
+    ----------
+    data_weights : jax.Array
+        Input data weights, shape (n_d,).
+    randoms_weights : jax.Array
+        Input randoms weights, shape (n_r,).
+    data_regions : jax.Array
+        Input masks for each region for the data, shape (r, n_d,).
+    randoms_regions : jax.Array
+        Input masks for each region for the data, shape (r, n_r,).
+    data_distances_digitized : jax.Array
+        Digitized radial distances of the data, shape (n_d,).
+    randoms_distances_digitized : jax.Array
+        Digitized radial distances of the randoms, shape (n_r,).
+    n_bins : int
+        Number of bins used in the digitization.
+    apply_to : Literal["data", "randoms"], optional
+        Whether to compute weights for the data or the randoms, by default "data"
+
+    Returns
+    -------
+    jax.Array
+        Weights to enforce RIC, to apply multiplicatively to the original data or randoms weights, shape (n_d,) or (n_r,).
+
+    Raises
+    ------
+    ValueError
+        If ``apply_to`` is an unsupported value.
+
+    Notes
+    -----
+    ``n_bins`` cannot be inferred dynamically, otherwise the function would not be compatible with ``jax.jit``.
+    """
+    if apply_to == "data":
+        pass
     elif apply_to == "randoms":
-        ric_weights_global = jnp.zeros_like(randoms_weights)
         data_weights, randoms_weights = randoms_weights, data_weights
         data_regions, randoms_regions = randoms_regions, data_regions
         data_distances_digitized, randoms_distances_digitized = randoms_distances_digitized, data_distances_digitized
     else:
         raise ValueError("Can only apply to randoms or data!")
+    return _apply_RIC(
+        data_weights,
+        randoms_weights,
+        data_regions,
+        randoms_regions,
+        data_distances_digitized,
+        randoms_distances_digitized,
+        n_bins,
+    ).sum(axis=0)
 
-    for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
-        alpha = jnp.where(data_region, data_weights, 0.0).sum() / jnp.where(randoms_region, randoms_weights, 0.0).sum()
-        data_weights_binned = jnp.bincount(data_distances_digitized, weights=data_weights * data_region, length=n_bins + 1)[1:]
-        randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights * randoms_region, length=n_bins + 1)[1:]
 
-        ric_weights_binned = jnp.where(
-            data_weights_binned == 0,
-            0.0,  # don't care, will never be applied
-            (alpha * randoms_weights_binned / data_weights_binned),
-        )
-        ric_weights_global += jnp.where(data_region, ric_weights_binned[data_distances_digitized - 1], 0.0)
-    return ric_weights_global
+@partial(jax.vmap, in_axes=(None, None, 0, 0, None, None, None))
+def _apply_RIC(data_weights, randoms_weights, data_region, randoms_region, data_distances_digitized, randoms_distances_digitized, n_bins):
+    alpha = jnp.where(data_region, data_weights, 0.0).sum() / jnp.where(randoms_region, randoms_weights, 0.0).sum()
+    data_weights_binned = jnp.bincount(data_distances_digitized, weights=data_weights * data_region, length=n_bins + 1)[1:]
+    randoms_weights_binned = jnp.bincount(randoms_distances_digitized, weights=randoms_weights * randoms_region, length=n_bins + 1)[1:]
+
+    ric_weights_binned = jnp.where(
+        data_weights_binned == 0,
+        0.0,  # don't care, will never be applied
+        (alpha * randoms_weights_binned / data_weights_binned),
+    )
+    return jnp.where(data_region, ric_weights_binned[data_distances_digitized - 1], 0.0)
 
 
 def mock_survey_FKP(
