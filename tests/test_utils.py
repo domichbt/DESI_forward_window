@@ -1,3 +1,5 @@
+"""Unit tests for utility functions in :py:module:`desiforwardwindow.utils`."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
