@@ -430,7 +430,7 @@ def apply_RIC(
         data_regions, randoms_regions = randoms_regions, data_regions
         data_distances_digitized, randoms_distances_digitized = randoms_distances_digitized, data_distances_digitized
     else:
-        raise ValueError("Can only apply to randoms or data!")
+        raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
 
     # alphas of shape (r,): sum over last axis = n
     alphas = (data_weights * data_regions).sum(axis=-1) / (randoms_weights * randoms_regions).sum(axis=-1)
