@@ -794,7 +794,7 @@ def apply_AMR(
         return (data_regions / (1 + jnp.einsum("in, ri->rn", data_templates_normalized, coefficients))).sum(axis=0)  # these are data weights
     elif apply_to == "randoms":
         # TODO: check that I'm not saying n'importe nawak for randoms
-        return randoms_regions * (1 + jnp.einsum("in, ri->rn", randoms_templates_normalized, coefficients)).sum(axis=0)  # these are randoms weights
+        return (randoms_regions * (1 + jnp.einsum("in, ri->rn", randoms_templates_normalized, coefficients))).sum(axis=0)  # these are randoms weights
     else:
         raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
 
