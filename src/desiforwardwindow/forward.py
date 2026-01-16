@@ -442,6 +442,10 @@ def prepare_RIC(
     for region in regions:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
         randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        if not data_mask.any():
+            raise ValueError("No data in region %s. Cannot proceed.", region)
+        if not randoms_mask.any():
+            raise ValueError("No randoms in region %s. Cannot proceed.", region)
         data_regions.append(data_mask)
         randoms_regions.append(randoms_mask)
 
@@ -657,6 +661,11 @@ def prepare_AMR(
 
         data_regions.append(data_mask)
         randoms_regions.append(randoms_mask)
+
+        if not data_mask.any():
+            raise ValueError("No data in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
+        if not randoms_mask.any():
+            raise ValueError("No randoms in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
 
     # pre-computed templates
     data_templates_digitized = jnp.vstack(
