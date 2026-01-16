@@ -799,6 +799,194 @@ def apply_AMR(
         raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
 
 
+NAM_args = make_jax_dataclass(
+    class_name="NAM_args",
+    dynamic_fields=[
+        "data_pixels",
+        "randoms_pixels",
+        "data_regions",
+        "randoms_regions",
+        "data_to_remove",
+    ],
+    aux_fields=["nside", "apply_to"],
+    types_fields={
+        "data_pixels": jax.Array,
+        "randoms_pixels": jax.Array,
+        "data_regions": jax.Array,
+        "randoms_regions": jax.Array,
+        "data_to_remove": jax.Array,
+        "nside": int,
+        "apply_to": Literal["data", "randoms"],
+    },
+)
+
+
+def prepare_NAM(
+    fkp_field: FKPField,
+    regions_zranges: list,
+    redshifts: tuple[jax.Array, jax.Array],
+    # RIC specific parameters
+    nside: int,
+    apply_to: Literal["data", "randoms"],
+) -> NAM_args:
+    """
+    Prepare arguments necessary to applying RIC in :py:func:`mock_survey_catalog`.
+
+    Parameters
+    ----------
+    fkp_field : ParticleField
+        Field containing positions and weights of all the particles.
+    regions : list[str]
+        Regions to split data in.
+    nside : int
+        NSIDE to use for healpixelization.
+    apply_to : Literal["data", "randoms"]
+        Whether to produce weights to apply to randoms or data.
+
+    Returns
+    -------
+    RIC_args
+        Custom pytree class that contains all necessary information to applying RIC in :py:func:`mock_survey_catalog`.
+
+    Notes
+    -----
+    Healpix manipulation is always done in ``RING`` scheme.
+    """
+
+    def _vec2pix(positions):
+        import healpy as hp
+
+        return hp.vec2pix(nside, *positions.T)
+
+    def vec2pix(positions):
+        return jax.pure_callback(_vec2pix, jax.ShapeDtypeStruct(positions.shape[:1], jnp.int64), positions)
+
+    from jax.experimental.shard_map import shard_map
+    from jax.sharding import PartitionSpec as P
+    from jaxpower.mesh import get_sharding_mesh
+
+    sharding_mesh = get_sharding_mesh()
+
+    if sharding_mesh.axis_names:
+        vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+
+    # Select the regions
+    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+
+    data_redshift = redshifts[0]
+    randoms_redshift = redshifts[1]
+
+    data_pixels = vec2pix(fkp_field.data.positions)
+    randoms_pixels = vec2pix(fkp_field.randoms.positions)
+
+    data_regions = []
+    randoms_regions = []
+
+    for region, (zmin, zmax) in regions_zranges:
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
+
+        if not data_mask.any():
+            raise ValueError("No data in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
+        if not randoms_mask.any():
+            raise ValueError("No randoms in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
+
+        data_regions.append(data_mask)
+        randoms_regions.append(randoms_mask)
+
+    data_pixels_counts = jnp.bincount(data_pixels, weights=None, length=12 * nside**2)
+    randoms_pixels_counts = jnp.bincount(randoms_pixels, weights=None, length=12 * nside**2)
+    data_but_no_randoms = (data_pixels_counts != 0) * (randoms_pixels_counts == 0)
+
+    return NAM_args(
+        data_pixels=data_pixels,
+        randoms_pixels=randoms_pixels,
+        data_regions=jnp.stack(data_regions),
+        randoms_regions=jnp.stack(randoms_regions),
+        data_to_remove=data_but_no_randoms,
+        nside=nside,
+        apply_to=apply_to,
+    )
+
+
+@jax.jit(static_argnames=["apply_to", "nside"])
+def apply_NAM(
+    data_weights: jax.Array,
+    randoms_weights: jax.Array,
+    data_regions: jax.Array,
+    randoms_regions: jax.Array,
+    data_pixels: jax.Array,
+    randoms_pixels: jax.Array,
+    nside: int = 256,
+    apply_to: Literal["data", "randoms"] = "randoms",
+) -> jax.Array:
+    """
+    Compute weights to apply the angular integral constraint  / nulled angular modes at the catalog level.
+
+    Parameters
+    ----------
+    data_weights : jax.Array
+        Input data weights, shape (n_d,).
+    randoms_weights : jax.Array
+        Input randoms weights, shape (n_r,).
+    data_regions : jax.Array
+        Input masks for each region for the data, shape (r, n_d,).
+    randoms_regions : jax.Array
+        Input masks for each region for the data, shape (r, n_r,).
+    data_pixels : jax.Array
+        HEALPix of the data, shape (n_d,).
+    randoms_pixel : jax.Array
+        HEALPix of the randoms, shape (n_r,).
+    nside : int, optional
+        Which NSIDE was used in the pixelization, by default 256.
+    apply_to : Literal["data", "randoms"], optional
+        Whether to compute weights for the data or the randoms, by default "randoms"
+
+    Returns
+    -------
+    jax.Array
+        Weights to enforce AIC/NAM, to apply multiplicatively to the original data or randoms weights, shape (n_d,) or (n_r,).
+
+    Raises
+    ------
+    ValueError
+        If ``apply_to`` is an unsupported value.
+
+    Notes
+    -----
+    * ``nside`` cannot be inferred dynamically, otherwise the function would not be compatible with ``jax.jit``.
+    * Region masks must be perfectly complementary with complete coverage of the particles.
+        * For uncovered particles, the returned weight will be 0
+        * For doubly covered particles, the returned weight will be the sum of the weights in each region
+    """
+    if apply_to == "data":
+        data_weights, randoms_weights = randoms_weights, data_weights
+        data_regions, randoms_regions = randoms_regions, data_regions
+        data_pixels, randoms_pixels = randoms_pixels, data_pixels
+    elif apply_to == "randoms":
+        pass
+    else:
+        raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
+
+    alphas = (data_weights * data_regions).sum(axis=-1) / (randoms_weights * randoms_regions).sum(axis=-1)
+    data_weights_binned = bincount(data_pixels, weights=data_regions * data_weights, length=12 * nside**2)
+    randoms_weights_binned = bincount(randoms_pixels, weights=randoms_regions * randoms_weights, length=12 * nside**2)
+    nam_weights_binned = jnp.where(
+        randoms_weights_binned == 0,
+        0.0,  # don't care, will never be applied
+        data_weights_binned / (alphas[..., None] * randoms_weights_binned),
+    )  # NOTE: this is not reverse-differentiation compatible
+    nam_weights = jnp.where(randoms_regions, nam_weights_binned[..., randoms_pixels], 0.0)
+    return nam_weights.sum(axis=range(nam_weights.ndim - 1))  # sum over regions
+
+
 def mock_survey_catalog(
     theory: ObservableTree,
     seed: jnp.ndarray,
@@ -808,7 +996,7 @@ def mock_survey_catalog(
     fkp_field: FKPField,
     ric_args: RIC_args | None,
     amr_args: AMR_args | None,
-    # nam_args: NAM_args | None,
+    nam_args: NAM_args | None,
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norm: jnp.ndarray,
@@ -865,6 +1053,22 @@ def mock_survey_catalog(
             data = data.clone(weights=data.weights * amr_weights)
         else:
             randoms = randoms.clone(weights=randoms.weights * amr_weights)
+
+    if nam_args is not None:
+        nam_weights = apply_NAM(
+            data_weights=data.weights,
+            randoms_weights=randoms.weights,
+            data_regions=nam_args.data_regions,
+            randoms_regions=nam_args.randoms_regions,
+            data_pixels=nam_args.data_pixels,
+            randoms_pixels=nam_args.randoms_pixels,
+            nside=nam_args.nside,
+            apply_to=nam_args.apply_to,
+        )
+        if nam_args.apply_to == "data":
+            data = data.clone(weights=data.weights * nam_weights)
+        else:
+            randoms = randoms.clone(weights=randoms.weights * nam_weights)
 
     # global randoms renormalization per region
     if randoms_regions is not None:
