@@ -622,8 +622,8 @@ def prepare_AMR(
         template_values_randoms = randoms.exchange_direct(make_array_from_process_local_data(template_values_randoms, pad="mean"), pad=0.0)
         randoms_redshifts = randoms.exchange_direct(make_array_from_process_local_data(randoms_redshifts, pad=0.0), pad=0.0)
     else:
-        template_values_data = jnp.array(template_values_randoms)
-        data_redshifts = jnp.array(randoms_redshifts)
+        template_values_randoms = jnp.array(template_values_randoms)
+        randoms_redshifts = jnp.array(randoms_redshifts)
 
     # Select the regions
     data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
