@@ -848,12 +848,12 @@ def prepare_NAM(
     randoms: ParticleField,
     regions_zranges: list,
     redshifts: tuple[jax.Array, jax.Array],
-    # RIC specific parameters
+    # NAM specific parameters
     nside: int,
     apply_to: Literal["data", "randoms"],
 ) -> NAM_args:
     """
-    Prepare arguments necessary to applying RIC in :py:func:`mock_survey_catalog`.
+    Prepare arguments necessary to applying NAM/AIC in :py:func:`mock_survey_catalog`.
 
     Parameters
     ----------
@@ -871,7 +871,7 @@ def prepare_NAM(
     Returns
     -------
     RIC_args
-        Custom pytree class that contains all necessary information to applying RIC in :py:func:`mock_survey_catalog`.
+        Custom pytree class that contains all necessary information to applying NAM/AIC in :py:func:`mock_survey_catalog`.
 
     Notes
     -----
