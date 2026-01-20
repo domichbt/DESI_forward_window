@@ -107,6 +107,22 @@ def load_footprint():
 
 def select_region(ra, dec, region=None):
     # print('select', region)
+
+    def _ang2pix(ra, dec):
+        return hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)
+
+    def ang2pix(ra, dec):
+        return jax.pure_callback(_ang2pix, jax.ShapeDtypeStruct(ra.shape[:1], jnp.int64), ra, dec)
+
+    from jax import shard_map
+    from jax.sharding import PartitionSpec as P
+    from jaxpower.mesh import get_sharding_mesh
+
+    sharding_mesh = get_sharding_mesh()
+
+    if sharding_mesh.axis_names:
+        ang2pix = shard_map(ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+
     if region in [None, "ALL", "GCcomb"]:
         return np.ones_like(ra, dtype="?")
     mask_ngc = ra > 100 - dec
@@ -128,7 +144,8 @@ def select_region(ra, dec, region=None):
     if footprint is None:
         load_footprint()
     north, south, des = footprint.get_imaging_surveys()
-    mask_des = des[hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)]
+    des = jnp.array(des)
+    mask_des = des[ang2pix(ra, dec)]
     if region == "DES":
         return mask_des
     if region == "SnoDES":
