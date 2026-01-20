@@ -411,9 +411,9 @@ def prepare_RIC(
     Parameters
     ----------
     data : ParticleField
-        Field containing positions and weights of tha data particles.
+        Field containing positions and weights of the data particles.
     randoms : ParticleField
-        Field containing positions and weights of tha randoms particles.
+        Field containing positions and weights of the randoms particles.
     regions : list[str]
         Regions to split data in.
     n_bins : int
@@ -589,9 +589,9 @@ def prepare_AMR(
     Parameters
     ----------
     data : ParticleField
-        Field containing positions and weights of tha data particles.
+        Field containing positions and weights of the data particles.
     randoms : ParticleField
-        Field containing positions and weights of tha randoms particles.
+        Field containing positions and weights of the randoms particles.
     template_values_data : jnp.ndarray
         Values of the templates for the data.
     template_values_randoms : jnp.ndarray
@@ -858,9 +858,9 @@ def prepare_NAM(
     Parameters
     ----------
     data : ParticleField
-        Field containing positions and weights of tha data particles.
+        Field containing positions and weights of the data particles.
     randoms : ParticleField
-        Field containing positions and weights of tha randoms particles.
+        Field containing positions and weights of the randoms particles.
     regions : list[str]
         Regions to split data in.
     nside : int
