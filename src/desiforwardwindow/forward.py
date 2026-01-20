@@ -13,6 +13,7 @@ from jaxpower import (
     compute_mesh2_spectrum,
     generate_anisotropic_gaussian_mesh,
 )
+from jaxpower.mesh import make_array_from_process_local_data
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
 from .utils import bincount, bincount_2d, make_jax_dataclass, select_region
@@ -610,6 +611,20 @@ def prepare_AMR(
     data_redshifts = redshifts[0]
     randoms_redshifts = redshifts[1]
 
+    # Shard the extra metadata similarly to data/randoms if necessary
+    if data.exchange_direct is not None:
+        template_values_data = data.exchange_direct(make_array_from_process_local_data(template_values_data, pad="mean"), pad=0.0)
+        data_redshifts = data.exchange_direct(make_array_from_process_local_data(data_redshifts, pad=0.0), pad=0.0)
+    else:
+        template_values_data = jnp.array(template_values_data)
+        data_redshifts = jnp.array(data_redshifts)
+    if randoms.exchange_direct is not None:
+        template_values_randoms = randoms.exchange_direct(make_array_from_process_local_data(template_values_randoms, pad="mean"), pad=0.0)
+        randoms_redshifts = randoms.exchange_direct(make_array_from_process_local_data(randoms_redshifts, pad=0.0), pad=0.0)
+    else:
+        template_values_data = jnp.array(template_values_randoms)
+        data_redshifts = jnp.array(randoms_redshifts)
+
     # Select the regions
     data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
     randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
@@ -865,6 +880,11 @@ def prepare_NAM(
     data_redshifts = redshifts[0]
     randoms_redshifts = redshifts[1]
 
+    # Shard the extra metadata similarly to data/randoms if necessary
+    if data.exchange_direct is not None:
+        data_redshifts = data.exchange_direct(make_array_from_process_local_data(data_redshifts, pad=0.0), pad=0.0)
+    if randoms.exchange_direct is not None:
+        randoms_redshifts = randoms.exchange_direct(make_array_from_process_local_data(randoms_redshifts, pad=0.0), pad=0.0)
 
     def _vec2pix(positions):
         import healpy as hp
