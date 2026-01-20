@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jaxpower import (
     BinMesh2SpectrumPoles,
     FKPField,
+    ParticleField,
     RealMeshField,
     compute_fkp2_shotnoise,
     compute_mesh2_spectrum,
@@ -396,7 +397,8 @@ RIC_args = make_jax_dataclass(
 
 
 def prepare_RIC(
-    fkp_field: FKPField,
+    data: ParticleField,
+    randoms: ParticleField,
     regions: list[str],
     # RIC specific parameters
     n_bins: int,
@@ -407,8 +409,10 @@ def prepare_RIC(
 
     Parameters
     ----------
-    fkp_field : ParticleField
-        Field containing positions and weights of all the particles.
+    data : ParticleField
+        Field containing positions and weights of tha data particles.
+    randoms : ParticleField
+        Field containing positions and weights of tha randoms particles.
     regions : list[str]
         Regions to split data in.
     n_bins : int
@@ -421,21 +425,21 @@ def prepare_RIC(
     RIC_args
         Custom pytree class that contains all necessary information to applying RIC in :py:func:`mock_survey_catalog`.
     """
-    boxcenter = fkp_field.attrs.boxcenter
-    boxsize = fkp_field.attrs.boxsize
+    boxcenter = data.attrs.boxcenter
+    boxsize = data.attrs.boxsize
     dmin = jnp.min(boxcenter - boxsize / 2.0)
     dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
     distance_edges = jnp.linspace(dmin, dmax, n_bins)
-    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
-    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
+    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
 
     # region selection
-    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
-    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+    data_ra = (jnp.arctan2(data.positions[..., 1], data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(randoms.positions[..., 1], randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
     data_regions = []
     randoms_regions = []
@@ -565,7 +569,8 @@ AMR_args = make_jax_dataclass(
 
 
 def prepare_AMR(
-    fkp_field: FKPField,
+    data: ParticleField,
+    randoms: ParticleField,
     redshifts: tuple[jnp.ndarray, jnp.ndarray],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     apply_to: Literal["data", "randoms"],
@@ -582,8 +587,10 @@ def prepare_AMR(
 
     Parameters
     ----------
-    fkp_field : ParticleField
-        Field containing positions and weights of all the particles.
+    data : ParticleField
+        Field containing positions and weights of tha data particles.
+    randoms : ParticleField
+        Field containing positions and weights of tha randoms particles.
     template_values_data : jnp.ndarray
         Values of the templates for the data.
     template_values_randoms : jnp.ndarray
@@ -600,16 +607,16 @@ def prepare_AMR(
     AMRArgsFKP
         Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
     """
-    # Select the regions
-    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
-    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
-    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
-    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+    data_redshifts = redshifts[0]
+    randoms_redshifts = redshifts[1]
 
-    data_redshift = redshifts[0]
-    randoms_redshift = redshifts[1]
+    # Select the regions
+    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(data.positions[..., 1], data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(randoms.positions[..., 1], randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
     templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
@@ -654,10 +661,10 @@ def prepare_AMR(
 
     for region, (zmin, zmax) in regions_zranges:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
-        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+        data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
 
         randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
-        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
+        randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts <= zmax)
 
         data_regions.append(data_mask)
         randoms_regions.append(randoms_mask)
@@ -669,15 +676,15 @@ def prepare_AMR(
 
     # pre-computed templates
     data_templates_digitized = jnp.vstack(
-        [jnp.full(shape=fkp_field.data.weights.shape, dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
+        [jnp.full(shape=data.weights.shape, dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
     )
-    data_templates_normalized = jnp.vstack([jnp.ones_like(fkp_field.data.weights), templates_normalized_d.T])
+    data_templates_normalized = jnp.vstack([jnp.ones_like(data.weights), templates_normalized_d.T])
 
     randoms_templates_digitized = jnp.vstack(
-        [jnp.full(shape=fkp_field.randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1) * (n_bins - 1), templates_digitized_r.T]
+        [jnp.full(shape=randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1) * (n_bins - 1), templates_digitized_r.T]
     )
     if apply_to == "randoms":
-        randoms_templates_normalized = jnp.vstack([jnp.ones_like(fkp_field.randoms.weights), templates_normalized_r.T])
+        randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms.weights), templates_normalized_r.T])
     else:
         randoms_templates_normalized = None
 
@@ -822,7 +829,8 @@ NAM_args = make_jax_dataclass(
 
 
 def prepare_NAM(
-    fkp_field: FKPField,
+    data: ParticleField,
+    randoms: ParticleField,
     regions_zranges: list,
     redshifts: tuple[jax.Array, jax.Array],
     # RIC specific parameters
@@ -834,8 +842,10 @@ def prepare_NAM(
 
     Parameters
     ----------
-    fkp_field : ParticleField
-        Field containing positions and weights of all the particles.
+    data : ParticleField
+        Field containing positions and weights of tha data particles.
+    randoms : ParticleField
+        Field containing positions and weights of tha randoms particles.
     regions : list[str]
         Regions to split data in.
     nside : int
@@ -852,6 +862,9 @@ def prepare_NAM(
     -----
     Healpix manipulation is always done in ``RING`` scheme.
     """
+    data_redshifts = redshifts[0]
+    randoms_redshifts = redshifts[1]
+
 
     def _vec2pix(positions):
         import healpy as hp
@@ -871,27 +884,24 @@ def prepare_NAM(
         vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     # Select the regions
-    data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
-    randoms_distances = jnp.sqrt(jnp.power(fkp_field.randoms.positions, 2).sum(axis=-1))
-    data_ra = (jnp.arctan2(fkp_field.data.positions[..., 1], fkp_field.data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    randoms_ra = (jnp.arctan2(fkp_field.randoms.positions[..., 1], fkp_field.randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    data_dec = jnp.arcsin(fkp_field.data.positions[..., 2] / data_distances) * 180 / jnp.pi
-    randoms_dec = jnp.arcsin(fkp_field.randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(data.positions[..., 1], data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(randoms.positions[..., 1], randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
-    data_redshift = redshifts[0]
-    randoms_redshift = redshifts[1]
-
-    data_pixels = vec2pix(fkp_field.data.positions)
-    randoms_pixels = vec2pix(fkp_field.randoms.positions)
+    data_pixels = vec2pix(data.positions)
+    randoms_pixels = vec2pix(randoms.positions)
 
     data_regions = []
     randoms_regions = []
 
     for region, (zmin, zmax) in regions_zranges:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
-        data_mask &= (zmin <= data_redshift) & (data_redshift <= zmax)
+        data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
         randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
-        randoms_mask &= (zmin <= randoms_redshift) & (randoms_redshift <= zmax)
+        randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts <= zmax)
 
         if not data_mask.any():
             raise ValueError("No data in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
