@@ -712,7 +712,7 @@ def prepare_AMR(
     data_templates_normalized = jnp.vstack([jnp.ones_like(data.weights), templates_normalized_d.T])
 
     randoms_templates_digitized = jnp.vstack(
-        [jnp.full(shape=randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1) * (n_bins - 1), templates_digitized_r.T]
+        [jnp.full(shape=randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1), templates_digitized_r.T]
     )
     if apply_to == "randoms":
         randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms.weights), templates_normalized_r.T])
