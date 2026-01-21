@@ -816,8 +816,8 @@ def apply_AMR(
     data_regions = jnp.atleast_2d(data_regions)
     randoms_regions = jnp.atleast_2d(randoms_regions)
 
-    data_weights *= jnp.invert(data_extremes)
-    randoms_weights *= jnp.invert(randoms_extremes)
+    data_weights *= data_extremes
+    randoms_weights *= randoms_extremes
 
     # shapes: (regions, N_sys + 1, N_bins + 1)
     data_binned = bincount_vmapped(data_templates_digitized, data_weights * data_regions, 0, n_bins + 1)
