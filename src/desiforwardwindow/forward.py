@@ -649,22 +649,11 @@ def prepare_AMR(
     data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
     randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
-    templates_lower_tails = jnp.percentile(template_values_randoms.T, tail / 2, axis=1, method="higher")
-    templates_upper_tails = jnp.percentile(template_values_randoms.T, 100 - tail / 2, axis=1, method="lower")
+    templates_lower_tails = jnp.percentile(template_values_randoms, tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.percentile(template_values_randoms, 100 - tail / 2, axis=0, method="lower")
 
-    mask_extremes_r = jnp.invert(
-        jnp.any(
-            (template_values_randoms < templates_lower_tails).T | (template_values_randoms > templates_upper_tails).T,
-            axis=0,
-        )
-    )
-
-    mask_extremes_d = jnp.invert(
-        jnp.any(
-            (template_values_data < templates_lower_tails).T | (template_values_data > templates_upper_tails).T,
-            axis=0,
-        )
-    )
+    mask_extremes_d = jnp.all((template_values_data >= templates_lower_tails) & (template_values_data <= templates_upper_tails), axis=1)
+    mask_extremes_r = jnp.all((template_values_randoms >= templates_lower_tails) & (template_values_randoms <= templates_upper_tails), axis=1)
 
     bin_edges = jnp.linspace(
         start=templates_lower_tails - bin_margin,
