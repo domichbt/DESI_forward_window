@@ -830,16 +830,17 @@ def apply_AMR(
         data_templates_digitized, data_weights[None, None, ...] * data_regions[:, None, ...] * data_templates_normalized[None, ...], 0, n_bins + 1
     )[..., 1:].swapaxes(-1, -2)
 
-    # Directly compute weights / randoms for efficiency
-    # Set weight to 0 where there are no randoms
-    w_over_r = jnp.where(
+    # this is K / (sigma R), set to 0 where there are no randoms ("infinite error")
+    prefactor = jnp.where(
         (randoms_binned != 0) & (data_binned != 0),
         1 / (jnp.sqrt(data_binned + data_binned**2 / randoms_binned)),
         0.0,
     )
 
-    X = jnp.einsum("rij,rijp->rijp", w_over_r, data_templates_binned)
-    y = data_binned * w_over_r - 1
+    normalization = (randoms_regions * randoms_weights).sum(axis=1) / (data_regions * data_weights).sum(axis=1)
+
+    X = prefactor[..., None] * data_templates_binned
+    y = prefactor * (data_binned - randoms_binned / normalization[..., None, None])
 
     Xty = jnp.einsum("rijp, rij -> rp ", X, y)
     XtX = jnp.einsum("rijq, rijp -> rpq", X, X)
