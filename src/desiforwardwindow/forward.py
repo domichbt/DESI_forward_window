@@ -819,16 +819,16 @@ def apply_AMR(
     data_weights *= data_extremes
     randoms_weights *= randoms_extremes
 
-    # shapes: (regions, N_sys + 1, N_bins + 1)
-    data_binned = bincount_vmapped(data_templates_digitized, data_weights * data_regions, 0, n_bins + 1)
-    randoms_binned = bincount_vmapped(randoms_templates_digitized, randoms_weights * randoms_regions, 0, n_bins + 1)
+    # shapes: (regions, N_sys + 1, N_bins)
+    data_binned = bincount_vmapped(data_templates_digitized, data_weights * data_regions, 0, n_bins + 1)[..., 1:]
+    randoms_binned = bincount_vmapped(randoms_templates_digitized, randoms_weights * randoms_regions, 0, n_bins + 1)[..., 1:]
 
     # shape: (regions, N_sys + 1, N_bins + 1,  N_sys + 1)
     # The last dimension is for the matrix product with the coefficients vector
     # The middle (N_sys + 1, N_bins + 1) correspond, in spirit, to one big axis
     data_templates_binned = bincount_vmapped(
         data_templates_digitized, data_weights[None, None, ...] * data_regions[:, None, ...] * data_templates_normalized[None, ...], 0, n_bins + 1
-    ).swapaxes(-1, -2)
+    )[..., 1:].swapaxes(-1, -2)
 
     # Directly compute weights / randoms for efficiency
     # Set weight to 0 where there are no randoms
