@@ -516,7 +516,7 @@ def apply_RIC(
     -----
     * ``n_bins`` cannot be inferred dynamically, otherwise the function would not be compatible with ``jax.jit``.
     * Region masks must be perfectly complementary with complete coverage of the particles.
-        * For uncovered particles, the returned weight will be 0
+        * For uncovered particles, the returned weight will be 1.
         * For doubly covered particles, the returned weight will be the sum of the weights in each region
     """
     if apply_to == "data":
@@ -538,7 +538,7 @@ def apply_RIC(
         (alphas[..., None] * randoms_weights_binned / data_weights_binned),
     )  # NOTE: this is not reverse-differentiation compatible
     ric_weights = jnp.where(data_regions, ric_weights_binned[..., data_distances_digitized - 1], 0.0)
-    return ric_weights.sum(axis=range(ric_weights.ndim - 1))
+    return ric_weights.sum(axis=range(ric_weights.ndim - 1)) + jnp.invert(data_regions.any(axis=0))
 
 
 AMR_args = make_jax_dataclass(
@@ -813,10 +813,14 @@ def apply_AMR(
     coefficients = jnp.linalg.solve(XtX, Xty[..., None]).squeeze(-1)
 
     if apply_to == "data":
-        return (data_regions / (1 + jnp.einsum("in, ri->rn", data_templates_normalized, coefficients))).sum(axis=0)  # these are data weights
+        return (data_regions / (1 + jnp.einsum("in, ri->rn", data_templates_normalized, coefficients))).sum(axis=0) + jnp.invert(
+            data_regions.any(axis=0)
+        )  # these are data weights
     elif apply_to == "randoms":
         # TODO: check that I'm not saying n'importe nawak for randoms
-        return (randoms_regions * (1 + jnp.einsum("in, ri->rn", randoms_templates_normalized, coefficients))).sum(axis=0)  # these are randoms weights
+        return (randoms_regions * (1 + jnp.einsum("in, ri->rn", randoms_templates_normalized, coefficients))).sum(axis=0) + jnp.invert(
+            randoms_regions.any(axis=0)
+        )  # these are randoms weights
     else:
         raise ValueError('Can only apply to randoms or data, not "%s"!', apply_to)
 
@@ -993,7 +997,7 @@ def apply_NAM(
     -----
     * ``nside`` cannot be inferred dynamically, otherwise the function would not be compatible with ``jax.jit``.
     * Region masks must be perfectly complementary with complete coverage of the particles.
-        * For uncovered particles, the returned weight will be 0
+        * For uncovered particles, the returned weight will be 1.
         * For doubly covered particles, the returned weight will be the sum of the weights in each region
     """
     if apply_to == "data":
@@ -1014,7 +1018,7 @@ def apply_NAM(
         data_weights_binned / (alphas[..., None] * randoms_weights_binned),
     )  # NOTE: this is not reverse-differentiation compatible
     nam_weights = jnp.where(randoms_regions, nam_weights_binned[..., randoms_pixels], 0.0)
-    return nam_weights.sum(axis=range(nam_weights.ndim - 1))  # sum over regions
+    return nam_weights.sum(axis=range(nam_weights.ndim - 1)) + jnp.invert(randoms_regions.any(axis=0))  # sum over regions and add 1 where no region
 
 
 def mock_survey_catalog(
