@@ -832,7 +832,11 @@ def apply_AMR(
 
     # Directly compute weights / randoms for efficiency
     # Set weight to 0 where there are no randoms
-    w_over_r = jnp.where(randoms_binned != 0, 1 / (jnp.sqrt(data_binned / randoms_binned**2 + data_binned**2 / randoms_binned**3) * randoms_binned), 0.0)
+    w_over_r = jnp.where(
+        (randoms_binned != 0) & (data_binned != 0),
+        1 / (jnp.sqrt(data_binned + data_binned**2 / randoms_binned)),
+        0.0,
+    )
 
     X = jnp.einsum("rij,rijp->rijp", w_over_r, data_templates_binned)
     y = data_binned * w_over_r - 1
