@@ -1,6 +1,7 @@
 """Forward modeling of observational effects."""
 
 from typing import Literal
+from warnings import warn
 
 import jax
 import jax.numpy as jnp
@@ -458,11 +459,26 @@ def prepare_RIC(
     randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
     data_to_remove = (data_distances_counts != 0) * (randoms_distances_counts == 0)
 
+    data_regions = jnp.stack(data_regions)
+    randoms_regions = jnp.stack(randoms_regions)
+
+    data_coverage = data_regions.sum(axis=0)
+    randoms_coverage = randoms_regions.sum(axis=0)
+
+    if (data_coverage >= 2).any():
+        warn("Some data particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+    if (randoms_coverage >= 2).any():
+        warn("Some randoms particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+    if (data_coverage < 1).any():
+        warn("Some data particles are in no region at all.", RuntimeWarning, stacklevel=3)
+    if (randoms_coverage < 1).any():
+        warn("Some randoms particles are in no region at all.", RuntimeWarning, stacklevel=3)
+
     return RIC_args(
         data_distances_digitized=data_distances_digitized,
         randoms_distances_digitized=randoms_distances_digitized,
-        data_regions=jnp.stack(data_regions),
-        randoms_regions=jnp.stack(randoms_regions),
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
         data_to_remove=data_to_remove,
         n_bins=n_bins,
         apply_to=apply_to,
@@ -703,9 +719,24 @@ def prepare_AMR(
     else:
         randoms_templates_normalized = None
 
+    data_regions = jnp.stack(data_regions)
+    randoms_regions = jnp.stack(randoms_regions)
+
+    data_coverage = data_regions.sum(axis=0)
+    randoms_coverage = randoms_regions.sum(axis=0)
+
+    if (data_coverage >= 2).any():
+        warn("Some data particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+    if (randoms_coverage >= 2).any():
+        warn("Some randoms particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+    if (data_coverage < 1).any():
+        warn("Some data particles are in no region at all.", RuntimeWarning, stacklevel=3)
+    if (randoms_coverage < 1).any():
+        warn("Some randoms particles are in no region at all.", RuntimeWarning, stacklevel=3)
+
     return AMR_args(
-        data_regions=jnp.stack(data_regions),
-        randoms_regions=jnp.stack(randoms_regions),
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
         data_extremes=mask_extremes_d,
         randoms_extremes=mask_extremes_r,
         data_templates_digitized=data_templates_digitized,
@@ -939,11 +970,26 @@ def prepare_NAM(
     randoms_pixels_counts = jnp.bincount(randoms_pixels, weights=None, length=12 * nside**2)
     data_but_no_randoms = (data_pixels_counts != 0) * (randoms_pixels_counts == 0)
 
+    data_regions = jnp.stack(data_regions)
+    randoms_regions = jnp.stack(randoms_regions)
+
+    data_coverage = data_regions.sum(axis=0)
+    randoms_coverage = randoms_regions.sum(axis=0)
+
+    if (data_coverage >= 2).any():
+        warn("Some data particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+    if (randoms_coverage >= 2).any():
+        warn("Some randoms particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+    if (data_coverage < 1).any():
+        warn("Some data particles are in no region at all.", RuntimeWarning, stacklevel=3)
+    if (randoms_coverage < 1).any():
+        warn("Some randoms particles are in no region at all.", RuntimeWarning, stacklevel=3)
+
     return NAM_args(
         data_pixels=data_pixels,
         randoms_pixels=randoms_pixels,
-        data_regions=jnp.stack(data_regions),
-        randoms_regions=jnp.stack(randoms_regions),
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
         data_to_remove=data_but_no_randoms,
         nside=nside,
         apply_to=apply_to,
