@@ -190,10 +190,15 @@ def prepare_AMR_FKP(
         masked_templates_normalized = templates_normalized_r * mask_extremes_r[:, None]
         wt2 = jnp.concatenate([jnp.ones_like(fkp_field.randoms.weights)[..., None], masked_templates_normalized], axis=-1)
 
-        jacobian = bincount_2d(
-            templates_digitized_r.T,
-            weights=masked_randoms_weights[:, None] * wt2,
-            length=n_bins + 1,
+        jacobian = jnp.moveaxis(
+            bincount_vmapped(
+                templates_digitized_r.T,
+                (masked_randoms_weights[:, None] * wt2).T,
+                0,
+                n_bins + 1,
+            ),
+            0,
+            -1,
         )[:, 1:, ...]
 
         normalization = (
@@ -742,7 +747,7 @@ def prepare_AMR(
 bincount_vmapped = jax.vmap(bincount, in_axes=(0, None, None, None), out_axes=1)
 
 
-# @jax.jit(static_argnames=["n_bins", "apply_to"])
+@jax.jit(static_argnames=["n_bins", "apply_to"])
 def apply_AMR(
     data_weights: jax.Array,
     randoms_weights: jax.Array,
