@@ -698,15 +698,15 @@ def prepare_AMR(
     data_templates_digitized = jnp.vstack(
         [jnp.full(shape=data.weights.shape, dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
     )
-    data_templates_normalized = jnp.vstack([jnp.ones_like(data.weights), templates_normalized_d.T])
-
     randoms_templates_digitized = jnp.vstack(
         [jnp.full(shape=randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1), templates_digitized_r.T]
     )
-    if apply_to == "randoms":
-        randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms.weights), templates_normalized_r.T])
+
+    if apply_to == "data":
+        data_templates_normalized = jnp.vstack([jnp.ones_like(data.weights), templates_normalized_d.T])
     else:
-        randoms_templates_normalized = None
+        data_templates_normalized = None
+    randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms.weights), templates_normalized_r.T])
 
     data_regions = jnp.stack(data_regions)
     randoms_regions = jnp.stack(randoms_regions)
@@ -742,7 +742,7 @@ def prepare_AMR(
 bincount_vmapped = jax.vmap(bincount, in_axes=(0, None, None, None), out_axes=1)
 
 
-@jax.jit(static_argnames=["n_bins", "apply_to"])
+# @jax.jit(static_argnames=["n_bins", "apply_to"])
 def apply_AMR(
     data_weights: jax.Array,
     randoms_weights: jax.Array,
@@ -752,8 +752,8 @@ def apply_AMR(
     randoms_extremes: jax.Array,
     data_templates_digitized: jax.Array,
     randoms_templates_digitized: jax.Array,
-    data_templates_normalized: jax.Array,
-    randoms_templates_normalized: jax.Array | None = None,
+    data_templates_normalized: jax.Array | None,
+    randoms_templates_normalized: jax.Array,
     n_bins: int = 10,
     apply_to: Literal["data", "randoms"] = "data",
 ) -> jax.Array:
@@ -778,10 +778,10 @@ def apply_AMR(
         Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ``n_bins - 1`` for the constant term.
     randoms_templates_digitized : jax.Array
         Digitized values of the templates for the randoms, shape (n_sys + 1, n_r). First line should be all ``n_bins - 1`` for the constant term.
-    data_templates_normalized : jax.Array
-        Normalized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ones for the constant term.
-    randoms_templates_normalized : jax.Array | None, optional
-        Normalized values of the templates for the randoms, shape (n_sys + 1, n_d). First line should be all ones for the constant term. This only needs to be provided if ``apply_to`` is set to ``"randoms"``. Default is ``None``.
+    data_templates_normalized : jax.Array | None
+        Normalized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ones for the constant term. This only needs to be provided if ``apply_to`` is set to ``"data"``.
+    randoms_templates_normalized : jax.Array
+        Normalized values of the templates for the randoms, shape (n_sys + 1, n_d). First line should be all ones for the constant term.
     n_bins : int, optional
         Number of bins used for the templates, by default 10.
     apply_to : Literal["data", "randoms"], optional
@@ -815,20 +815,14 @@ def apply_AMR(
     # shape: (regions, N_sys + 1, N_bins + 1,  N_sys + 1)
     # The last dimension is for the matrix product with the coefficients vector
     # The middle (N_sys + 1, N_bins + 1) correspond, in spirit, to one big axis
-    data_templates_binned = bincount_vmapped(
-        data_templates_digitized, data_weights[None, None, ...] * data_regions[:, None, ...] * data_templates_normalized[None, ...], 0, n_bins + 1
+    randoms_templates_binned = bincount_vmapped(
+        randoms_templates_digitized, randoms_weights[None, None, ...] * randoms_regions[:, None, ...] * randoms_templates_normalized[None, ...], 0, n_bins + 1
     )[..., 1:].swapaxes(-1, -2)
 
-    # this is K / (sigma R), set to 0 where there are no randoms ("infinite error")
-    prefactor = jnp.where(
-        (randoms_binned != 0) & (data_binned != 0),
-        1 / (jnp.sqrt(data_binned + data_binned**2 / randoms_binned)),
-        0.0,
-    )
-
     normalization = (randoms_regions * randoms_weights).sum(axis=1) / (data_regions * data_weights).sum(axis=1)
+    prefactor = jnp.where(randoms_binned != 0, jnp.sqrt(normalization[:, None, None] / randoms_binned), 0.0)
 
-    X = prefactor[..., None] * data_templates_binned
+    X = prefactor[..., None] * randoms_templates_binned
     y = prefactor * (data_binned - randoms_binned / normalization[..., None, None])
 
     Xty = jnp.einsum("rijp, rij -> rp ", X, y)
