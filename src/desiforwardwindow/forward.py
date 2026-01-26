@@ -462,7 +462,7 @@ def prepare_RIC(
 
     data_distances_counts = jnp.bincount(data_distances_digitized, weights=None, length=n_bins + 1)[1:]
     randoms_distances_counts = jnp.bincount(randoms_distances_digitized, weights=None, length=n_bins + 1)[1:]
-    data_to_remove = (data_distances_counts != 0) * (randoms_distances_counts == 0)
+    data_to_remove = ((data_distances_counts != 0) * (randoms_distances_counts == 0))[data_distances_digitized]
 
     data_regions = jnp.stack(data_regions)
     randoms_regions = jnp.stack(randoms_regions)
@@ -961,7 +961,7 @@ def prepare_NAM(
 
     data_pixels_counts = jnp.bincount(data_pixels, weights=None, length=12 * nside**2)
     randoms_pixels_counts = jnp.bincount(randoms_pixels, weights=None, length=12 * nside**2)
-    data_but_no_randoms = (data_pixels_counts != 0) * (randoms_pixels_counts == 0)
+    data_but_no_randoms = ((data_pixels_counts != 0) * (randoms_pixels_counts == 0))[data_pixels]
 
     data_regions = jnp.stack(data_regions)
     randoms_regions = jnp.stack(randoms_regions)
