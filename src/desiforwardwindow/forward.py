@@ -471,13 +471,13 @@ def prepare_RIC(
     randoms_coverage = randoms_regions.sum(axis=0)
 
     if (data_coverage >= 2).any():
-        warn("Some data particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(data_coverage >= 2).sum()}/{data_coverage.size}) data particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage >= 2).any():
-        warn("Some randoms particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(randoms_coverage >= 2).sum()}/{randoms_coverage.size}) randoms particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (data_coverage < 1).any():
-        warn("Some data particles are in no region at all.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(data_coverage == 0).sum()}/{data_coverage.size}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage < 1).any():
-        warn("Some randoms particles are in no region at all.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     return RIC_args(
         data_distances_digitized=data_distances_digitized,
@@ -720,13 +720,13 @@ def prepare_AMR(
     randoms_coverage = randoms_regions.sum(axis=0)
 
     if (data_coverage >= 2).any():
-        warn("Some data particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(data_coverage >= 2).sum()}/{data_coverage.size}) data particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage >= 2).any():
-        warn("Some randoms particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(randoms_coverage >= 2).sum()}/{randoms_coverage.size}) randoms particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (data_coverage < 1).any():
-        warn("Some data particles are in no region at all.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(data_coverage == 0).sum()}/{data_coverage.size}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage < 1).any():
-        warn("Some randoms particles are in no region at all.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     return AMR_args(
         data_regions=data_regions,
@@ -970,13 +970,13 @@ def prepare_NAM(
     randoms_coverage = randoms_regions.sum(axis=0)
 
     if (data_coverage >= 2).any():
-        warn("Some data particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(data_coverage >= 2).sum()}/{data_coverage.size}) data particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage >= 2).any():
-        warn("Some randoms particles are in several regions at once.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(randoms_coverage >= 2).sum()}/{randoms_coverage.size}) randoms particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (data_coverage < 1).any():
-        warn("Some data particles are in no region at all.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(data_coverage == 0).sum()}/{data_coverage.size}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage < 1).any():
-        warn("Some randoms particles are in no region at all.", RuntimeWarning, stacklevel=3)
+        warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     return NAM_args(
         data_pixels=data_pixels,
