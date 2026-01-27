@@ -329,14 +329,12 @@ def prepare_NAM_FKP(
     def vec2pix(positions):
         return jax.pure_callback(_vec2pix, jax.ShapeDtypeStruct(positions.shape[:1], jnp.int64), positions)
 
-    from jax.experimental.shard_map import shard_map
     from jax.sharding import PartitionSpec as P
-    from jaxpower.mesh import get_sharding_mesh
 
     sharding_mesh = get_sharding_mesh()
 
     if sharding_mesh.axis_names:
-        vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+        vec2pix = jax.shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     # Select the regions
     data_distances = jnp.sqrt(jnp.power(fkp_field.data.positions, 2).sum(axis=-1))
@@ -944,14 +942,12 @@ def prepare_NAM(
     def vec2pix(positions):
         return jax.pure_callback(_vec2pix, jax.ShapeDtypeStruct(positions.shape[:1], jnp.int64), positions)
 
-    from jax.experimental.shard_map import shard_map
     from jax.sharding import PartitionSpec as P
-    from jaxpower.mesh import get_sharding_mesh
 
     sharding_mesh = get_sharding_mesh()
 
     if sharding_mesh.axis_names:
-        vec2pix = shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+        vec2pix = jax.shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     # Select the regions
     data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
