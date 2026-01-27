@@ -14,10 +14,10 @@ from jaxpower import (
     compute_mesh2_spectrum,
     generate_anisotropic_gaussian_mesh,
 )
-from jaxpower.mesh import make_array_from_process_local_data
+from jaxpower.mesh import get_sharding_mesh, make_array_from_process_local_data
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
-from .utils import bincount, bincount_2d, make_jax_dataclass, select_region
+from .utils import bincount, bincount_2d, bincount_sorted, local_argsort, make_jax_dataclass, select_region
 
 AMRArgsFKP = make_jax_dataclass(
     class_name="AMRArgsFKP",
@@ -573,6 +573,8 @@ AMR_args = make_jax_dataclass(
         "randoms_templates_digitized",
         "data_templates_normalized",
         "randoms_templates_normalized",
+        "data_isort",
+        "randoms_isort",
     ],
     aux_fields=["n_bins", "apply_to"],
     types_fields={
@@ -584,6 +586,8 @@ AMR_args = make_jax_dataclass(
         "randoms_templates_digitized": jax.Array,
         "data_templates_normalized": jax.Array,
         "randoms_templates_normalized": jax.Array,
+        "data_isort": jax.Array,
+        "randoms_isort": jax.Array,
         "n_bins": int,
         "apply_to": Literal["data", "randoms"],
     },
@@ -728,6 +732,9 @@ def prepare_AMR(
     if (randoms_coverage < 1).any():
         warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
+    data_isort = local_argsort(data_templates_digitized, axis=1)
+    randoms_isort = local_argsort(randoms_templates_digitized, axis=1)
+
     return AMR_args(
         data_regions=data_regions,
         randoms_regions=randoms_regions,
@@ -737,6 +744,8 @@ def prepare_AMR(
         randoms_templates_digitized=randoms_templates_digitized,
         data_templates_normalized=data_templates_normalized,
         randoms_templates_normalized=randoms_templates_normalized,
+        data_isort=data_isort,
+        randoms_isort=randoms_isort,
         n_bins=n_bins,
         apply_to=apply_to,
     )
@@ -745,6 +754,7 @@ def prepare_AMR(
 # offset the output axis by one so that region axis is always first
 # vmap only takes positional argument, so always explicitly set minlength to the default 0
 bincount_vmapped = jax.vmap(bincount, in_axes=(0, None, None, None), out_axes=1)
+bincount_sorted_vmapped = jax.vmap(bincount_sorted, in_axes=(0, None, 0, None, None))
 
 
 @jax.jit(static_argnames=["n_bins", "apply_to"])
@@ -759,6 +769,8 @@ def apply_AMR(
     randoms_templates_digitized: jax.Array,
     data_templates_normalized: jax.Array | None,
     randoms_templates_normalized: jax.Array,
+    data_isort: jax.Array,
+    randoms_isort: jax.Array,
     n_bins: int = 10,
     apply_to: Literal["data", "randoms"] = "data",
 ) -> jax.Array:
@@ -807,22 +819,32 @@ def apply_AMR(
      * The regions mask should not contain the extremes, ohterwise the output weights for the extremes will be wrong.
      * Regions should not overlap, otherwise weights for multi-region particles will be wrong.
     """
-    data_regions = jnp.atleast_2d(data_regions)
-    randoms_regions = jnp.atleast_2d(randoms_regions)
+    data_regions = jnp.atleast_2d(data_regions)  # [:, data_isort]
+    randoms_regions = jnp.atleast_2d(randoms_regions)  # [:, randoms_isort]
 
-    data_weights *= data_extremes
-    randoms_weights *= randoms_extremes
+    data_weights = data_weights * data_extremes  # [data_isort]
+    randoms_weights = randoms_weights * randoms_extremes  # [randoms_isort]
 
     # shapes: (regions, N_sys + 1, N_bins)
-    data_binned = bincount_vmapped(data_templates_digitized, data_weights * data_regions, 0, n_bins + 1)[..., 1:]
-    randoms_binned = bincount_vmapped(randoms_templates_digitized, randoms_weights * randoms_regions, 0, n_bins + 1)[..., 1:]
+    data_binned = jnp.moveaxis(bincount_sorted_vmapped(data_templates_digitized, data_weights * data_regions, data_isort, n_bins, get_sharding_mesh()), -1, 0)
+    randoms_binned = jnp.moveaxis(
+        bincount_sorted_vmapped(randoms_templates_digitized, randoms_weights * randoms_regions, randoms_isort, n_bins, get_sharding_mesh()), -1, 0
+    )
 
     # shape: (regions, N_sys + 1, N_bins + 1,  N_sys + 1)
     # The last dimension is for the matrix product with the coefficients vector
     # The middle (N_sys + 1, N_bins + 1) correspond, in spirit, to one big axis
-    randoms_templates_binned = bincount_vmapped(
-        randoms_templates_digitized, randoms_weights[None, None, ...] * randoms_regions[:, None, ...] * randoms_templates_normalized[None, ...], 0, n_bins + 1
-    )[..., 1:].swapaxes(-1, -2)
+    randoms_templates_binned = jnp.moveaxis(
+        bincount_sorted_vmapped(
+            randoms_templates_digitized,
+            randoms_weights[None, None, ...] * randoms_regions[:, None, ...] * randoms_templates_normalized[None, ...],
+            randoms_isort,
+            n_bins,
+            get_sharding_mesh(),
+        ),
+        -2,
+        0,
+    )
 
     normalization = (randoms_regions * randoms_weights).sum(axis=1) / (data_regions * data_weights).sum(axis=1)
     prefactor = jnp.where(randoms_binned != 0, jnp.sqrt(normalization[:, None, None] / randoms_binned), 0.0)
@@ -1119,6 +1141,8 @@ def mock_survey_catalog(
             randoms_templates_digitized=amr_args.randoms_templates_digitized,
             data_templates_normalized=amr_args.data_templates_normalized,
             randoms_templates_normalized=amr_args.randoms_templates_normalized,
+            data_isort=amr_args.data_isort,
+            randoms_isort=amr_args.randoms_isort,
             n_bins=amr_args.n_bins,
             apply_to=amr_args.apply_to,
         )

@@ -8,6 +8,8 @@ import healpy as hp
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax import shard_map
+from jax.sharding import PartitionSpec as P
 from mockfactory import Catalog, sky_to_cartesian
 
 NSIDE = 256
@@ -77,6 +79,84 @@ def bincount_2d(x: jnp.ndarray, weights: jnp.ndarray, minlength: int = 0, length
         ),
         xs=x,
     )
+
+
+def bincount_sorted(
+    x: jax.Array, weights: jax.Array, rearrange: jax.Array | None, length: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None
+) -> jax.Array:
+    """
+    Perform a bincount over a **sorted** 1D integer array, allowing n-D weights.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Array of integers of shape (n,). Must be sorted or sorted by ``rearrange``.
+    weights : jax.Array
+        Array of weights, shape (..., n).
+    rearrange: jax.Array | None
+        Array of integer indices indicating how to sort ``weights`` and ``x``. If set to ``None``, ``x`` is assumed to be ordered.
+    length : int | None, optional
+        Optional fixed length for the output array. Must be set for ``jax.jit`` compatibility.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Array of shape (..., ``length``).
+
+    Notes
+    -----
+    If a sharding mesh is provided, ``x`` need only be sorted locally on each shard. Such functionality is provided by e.g. :py:func:`desiforwardwindow.utils.local_sort`. This avoids unnecessary communication between devices.
+    """
+    weights = jnp.moveaxis(weights, -1, 0)
+    if rearrange is not None:
+        x = x[rearrange]
+        weights = weights[rearrange]
+    if sharding_mesh is None:
+        return jax.ops.segment_sum(data=weights, segment_ids=x, num_segments=length, indices_are_sorted=True)
+    else:
+
+        @shard_map(
+            in_specs=(P((*sharding_mesh.axis_names,), *([None] * (weights.ndim - 1))), P((*sharding_mesh.axis_names,)), None),
+            out_specs=P(None),
+            mesh=sharding_mesh,
+            check_vma=False,  # TODO: remove when jax updates to 0.8.3
+        )
+        def _bincount_sorted(data, segment_ids, num_segments):
+            return jax.lax.psum(
+                jax.ops.segment_sum(data=data, segment_ids=segment_ids, num_segments=num_segments, indices_are_sorted=True),
+                axis_name=(*sharding_mesh.axis_names,),
+            )
+
+        return _bincount_sorted(weights, x, length)
+
+
+def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None) -> jax.Array:
+    """
+    Sharding-local implementation of :py:func:`jnp.argsort`.
+
+    Parameters
+    ----------
+    arr : jax.Array
+        Array to sort.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Indices that sort each shard of the array.
+    """
+    if sharding_mesh is None:
+        return jnp.argsort(arr, axis=axis)
+    else:
+
+        @shard_map(in_specs=(P((*sharding_mesh.axis_names,)), None), out_specs=(P((*sharding_mesh.axis_names,))))
+        def _local_argsort(arr, axis):
+            return jnp.argsort(arr, axis=axis)
+
+        return _local_argsort(arr, axis)
 
 
 def apply_wntmp(ntile, ntmp_table, method="ntmp"):
