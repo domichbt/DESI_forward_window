@@ -132,9 +132,9 @@ def get_window_spikes(
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
-    for imock in tqdm(range(nreal)):
+    for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in range(nsplits):
+        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
             spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_survey=mock_survey, **mock_survey_kw).T
@@ -216,9 +216,9 @@ def get_windows_spikes(
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
-    for imock in tqdm(range(nreal)):
+    for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in range(nsplits):
+        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
             spectra = [wd.T for wd in get_windows(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_surveys, **mock_surveys_kw)]
@@ -251,6 +251,7 @@ def get_windows_component(injected_theory, fiducial_theory, seed, mock_surveys, 
     def derivative(s):
         # fiducial_value -> global
         return jax.jvp(get_responses, primals=(jnp.concatenate(fiducial_theory.value(concatenate=False)),), tangents=(s,))[1]
+        # return get_responses(jnp.concatenate(fiducial_theory.value(concatenate=False)) * s)
 
     return jax.vmap(derivative)(injected_theory)
 

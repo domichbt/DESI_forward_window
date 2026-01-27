@@ -8,6 +8,8 @@ import healpy as hp
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax import shard_map
+from jax.sharding import PartitionSpec as P
 from mockfactory import Catalog, sky_to_cartesian
 
 NSIDE = 256
@@ -16,7 +18,33 @@ footprint = None
 
 @jax.jit
 def _my_bincount(idx, accumulator, weights):
-    return accumulator.at[idx].add(weights)[:-1]
+    return accumulator.at[..., idx].add(weights)[..., :-1]
+
+
+def bincount(x: jax.Array, weights: jax.Array, minlength: int = 0, length: int | None = None) -> jax.Array:
+    """
+    Perform a bincount over a 1D integer array (like :py:func:`jax.numpy.bincount`), allowing n-D weights.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Array of integers of shape (n,).
+    weights : jax.Array
+        Corresponding weights of shape (..., n).
+    minlength : int, optional
+        A minimum number of bins for the output array, by default 0.
+    length : int or None, optional
+        Optional fixed length for the output array. Must be set for ``jax.jit`` compatibility.
+
+    Returns
+    -------
+    jax.Array
+        Array of shape (..., ``length``).
+    """
+    if length is None:
+        length = max(x.max() + 1, minlength)
+    accumulator = jnp.zeros((*weights.shape[:-1], length + 1), dtype=weights.dtype)
+    return _my_bincount(x, accumulator, weights)
 
 
 def bincount_2d(x: jnp.ndarray, weights: jnp.ndarray, minlength: int = 0, length: int | None = None) -> jnp.ndarray:
@@ -53,6 +81,84 @@ def bincount_2d(x: jnp.ndarray, weights: jnp.ndarray, minlength: int = 0, length
     )
 
 
+def bincount_sorted(
+    x: jax.Array, weights: jax.Array, rearrange: jax.Array | None, length: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None
+) -> jax.Array:
+    """
+    Perform a bincount over a **sorted** 1D integer array, allowing n-D weights.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Array of integers of shape (n,). Must be sorted or sorted by ``rearrange``.
+    weights : jax.Array
+        Array of weights, shape (..., n).
+    rearrange: jax.Array | None
+        Array of integer indices indicating how to sort ``weights`` and ``x``. If set to ``None``, ``x`` is assumed to be ordered.
+    length : int | None, optional
+        Optional fixed length for the output array. Must be set for ``jax.jit`` compatibility.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Array of shape (..., ``length``).
+
+    Notes
+    -----
+    If a sharding mesh is provided, ``x`` need only be sorted locally on each shard. Such functionality is provided by e.g. :py:func:`desiforwardwindow.utils.local_sort`. This avoids unnecessary communication between devices.
+    """
+    weights = jnp.moveaxis(weights, -1, 0)
+    if rearrange is not None:
+        x = x[rearrange]
+        weights = weights[rearrange]
+    if sharding_mesh is None:
+        return jax.ops.segment_sum(data=weights, segment_ids=x, num_segments=length, indices_are_sorted=True)
+    else:
+
+        @shard_map(
+            in_specs=(P((*sharding_mesh.axis_names,), *([None] * (weights.ndim - 1))), P((*sharding_mesh.axis_names,)), None),
+            out_specs=P(None),
+            mesh=sharding_mesh,
+            check_vma=False,  # TODO: remove when jax updates to 0.8.3
+        )
+        def _bincount_sorted(data, segment_ids, num_segments):
+            return jax.lax.psum(
+                jax.ops.segment_sum(data=data, segment_ids=segment_ids, num_segments=num_segments, indices_are_sorted=True),
+                axis_name=(*sharding_mesh.axis_names,),
+            )
+
+        return _bincount_sorted(weights, x, length)
+
+
+def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None) -> jax.Array:
+    """
+    Sharding-local implementation of :py:func:`jnp.argsort`.
+
+    Parameters
+    ----------
+    arr : jax.Array
+        Array to sort.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Indices that sort each shard of the array.
+    """
+    if sharding_mesh is None:
+        return jnp.argsort(arr, axis=axis)
+    else:
+
+        @shard_map(in_specs=(P((*sharding_mesh.axis_names,)), None), out_specs=(P((*sharding_mesh.axis_names,))))
+        def _local_argsort(arr, axis):
+            return jnp.argsort(arr, axis=axis)
+
+        return _local_argsort(arr, axis)
+
+
 def apply_wntmp(ntile, ntmp_table, method="ntmp"):
     frac_missing_pw, frac_zero_prob = ntmp_table
     if method == "ntmp":
@@ -81,6 +187,22 @@ def load_footprint():
 
 def select_region(ra, dec, region=None):
     # print('select', region)
+
+    def _ang2pix(ra, dec):
+        return hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)
+
+    def ang2pix(ra, dec):
+        return jax.pure_callback(_ang2pix, jax.ShapeDtypeStruct(ra.shape[:1], jnp.int64), ra, dec)
+
+    from jax import shard_map
+    from jax.sharding import PartitionSpec as P
+    from jaxpower.mesh import get_sharding_mesh
+
+    sharding_mesh = get_sharding_mesh()
+
+    if sharding_mesh.axis_names:
+        ang2pix = shard_map(ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+
     if region in [None, "ALL", "GCcomb"]:
         return np.ones_like(ra, dtype="?")
     mask_ngc = ra > 100 - dec
@@ -102,7 +224,8 @@ def select_region(ra, dec, region=None):
     if footprint is None:
         load_footprint()
     north, south, des = footprint.get_imaging_surveys()
-    mask_des = des[hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)]
+    des = jnp.array(des)
+    mask_des = des[ang2pix(ra, dec)]
     if region == "DES":
         return mask_des
     if region == "SnoDES":
