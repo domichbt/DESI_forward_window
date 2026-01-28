@@ -113,7 +113,7 @@ def bincount_sorted(
     if rearrange is not None:
         x = x[rearrange]
         weights = weights[rearrange]
-    if sharding_mesh is None:
+    if (sharding_mesh is None) or sharding_mesh.empty:
         return jax.ops.segment_sum(data=weights, segment_ids=x, num_segments=length, indices_are_sorted=True)
     else:
 
@@ -148,7 +148,7 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
     jax.Array
         Indices that sort each shard of the array.
     """
-    if sharding_mesh is None:
+    if (sharding_mesh is None) or sharding_mesh.empty:
         return jnp.argsort(arr, axis=axis)
     else:
 
