@@ -197,7 +197,7 @@ def select_region(ra, dec, region=None, sharding_mesh=None):
     if (sharding_mesh is None) or sharding_mesh.empty:
         ang2pix = _ang2pix
     else:
-        ang2pix = shard_map(__ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+        ang2pix = shard_map(_ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     if region in [None, "ALL", "GCcomb"]:
         if isinstance(ra, jax.Array):
