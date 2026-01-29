@@ -204,7 +204,10 @@ def select_region(ra, dec, region=None):
         ang2pix = shard_map(ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     if region in [None, "ALL", "GCcomb"]:
-        return np.ones_like(ra, dtype="?")
+        if isinstance(ra, jax.Array):
+            return jnp.ones_like(ra, dtype=bool)
+        else:
+            return np.ones_line(ra, dtype=bool)
     mask_ngc = ra > 100 - dec
     mask_ngc &= ra < 280 + dec
     mask_n = mask_ngc & (dec > 32.375)
