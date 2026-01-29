@@ -109,27 +109,29 @@ def bincount_sorted(
     -----
     If a sharding mesh is provided, ``x`` need only be sorted locally on each shard. Such functionality is provided by e.g. :py:func:`desiforwardwindow.utils.local_sort`. This avoids unnecessary communication between devices.
     """
-    weights = jnp.moveaxis(weights, -1, 0)
-    if rearrange is not None:
-        x = x[rearrange]
-        weights = weights[rearrange]
     if (sharding_mesh is None) or sharding_mesh.empty:
+        if rearrange is not None:
+            x = x[rearrange]
+            weights = jnp.moveaxis(weights, -1, 0)[rearrange]
         return jax.ops.segment_sum(data=weights, segment_ids=x, num_segments=length, indices_are_sorted=True)
     else:
 
         @shard_map(
-            in_specs=(P((*sharding_mesh.axis_names,), *([None] * (weights.ndim - 1))), P((*sharding_mesh.axis_names,)), None),
+            in_specs=(P(*([None] * (weights.ndim - 1)), (*sharding_mesh.axis_names,)), P((*sharding_mesh.axis_names,)), None, P((*sharding_mesh.axis_names,))),
             out_specs=P(None),
             mesh=sharding_mesh,
             check_vma=False,  # TODO: remove when jax updates to 0.8.3
         )
-        def _bincount_sorted(data, segment_ids, num_segments):
+        def _bincount_sorted(data, segment_ids, num_segments, rearrange):
+            if rearrange is not None:
+                segment_ids = segment_ids[rearrange]
+                data = jnp.moveaxis(data, -1, 0)[rearrange]
             return jax.lax.psum(
                 jax.ops.segment_sum(data=data, segment_ids=segment_ids, num_segments=num_segments, indices_are_sorted=True),
                 axis_name=(*sharding_mesh.axis_names,),
             )
 
-        return _bincount_sorted(weights, x, length)
+        return _bincount_sorted(weights, x, length, rearrange)
 
 
 def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None) -> jax.Array:
