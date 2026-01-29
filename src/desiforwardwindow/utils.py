@@ -152,7 +152,7 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
         return jnp.argsort(arr, axis=axis)
     else:
 
-        @shard_map(in_specs=(P((*sharding_mesh.axis_names,)), None), out_specs=(P((*sharding_mesh.axis_names,))))
+        @shard_map(in_specs=(arr.sharding.spec, None), out_specs=(arr.sharding.spec), mesh=sharding_mesh)
         def _local_argsort(arr, axis):
             return jnp.argsort(arr, axis=axis)
 
