@@ -235,7 +235,7 @@ def select_region(ra, dec, region=None):
         return mask_s & (~mask_des)
     if region == "SSGCnoDES":
         return (~mask_ngc) & mask_s & (~mask_des)
-    raise ValueError("unknown region {}".format(region))
+    raise ValueError("unknown region %s", region)
 
 
 def get_clustering_rdzw(
