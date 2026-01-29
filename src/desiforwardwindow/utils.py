@@ -212,6 +212,9 @@ def select_region(ra, dec, region=None):
     mask_ngc &= ra < 280 + dec
     mask_n = mask_ngc & (dec > 32.375)
     mask_s = (~mask_n) & (dec > -25.0)
+    # Force synchronization to avoid hangs with JAX arrays
+    if isinstance(mask_s, jax.Array):
+        mask_s.block_until_ready()
     if region == "NGC":
         return mask_ngc
     if region == "SGC":
