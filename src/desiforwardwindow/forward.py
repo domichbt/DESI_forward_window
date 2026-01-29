@@ -448,9 +448,11 @@ def prepare_RIC(
 
     data_regions = []
     randoms_regions = []
+    sharding_mesh = get_sharding_mesh()
+
     for region in regions:
-        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
-        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region, sharding_mesh=sharding_mesh)
         if not data_mask.any():
             raise ValueError("No data in region %s. Cannot proceed.", region)
         if not randoms_mask.any():
@@ -686,11 +688,13 @@ def prepare_AMR(
     data_regions = []
     randoms_regions = []
 
+    sharding_mesh = get_sharding_mesh()
+
     for region, (zmin, zmax) in regions_zranges:
-        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
         data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
 
-        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region, sharding_mesh=sharding_mesh)
         randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts <= zmax)
 
         data_regions.append(data_mask)
@@ -964,9 +968,9 @@ def prepare_NAM(
     randoms_regions = []
 
     for region, (zmin, zmax) in regions_zranges:
-        data_mask = select_region(ra=data_ra, dec=data_dec, region=region)
+        data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
         data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
-        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region)
+        randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region, sharding_mesh=sharding_mesh)
         randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts <= zmax)
 
         if not data_mask.any():

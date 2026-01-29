@@ -185,23 +185,19 @@ def load_footprint():
     footprint = footprint.DR9Footprint(NSIDE, mask_lmc=False, clear_south=True, mask_around_des=False, cut_desi=False)
 
 
-def select_region(ra, dec, region=None):
-    # print('select', region)
+def __ang2pix(ra, dec):
+    return hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)
 
-    def _ang2pix(ra, dec):
-        return hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)
 
-    def ang2pix(ra, dec):
-        return jax.pure_callback(_ang2pix, jax.ShapeDtypeStruct(ra.shape[:1], jnp.int64), ra, dec)
+def _ang2pix(ra, dec):
+    return jax.pure_callback(__ang2pix, jax.ShapeDtypeStruct(ra.shape[:1], jnp.int64), ra, dec)
 
-    from jax import shard_map
-    from jax.sharding import PartitionSpec as P
-    from jaxpower.mesh import get_sharding_mesh
 
-    sharding_mesh = get_sharding_mesh()
-
-    if sharding_mesh.axis_names:
-        ang2pix = shard_map(ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+def select_region(ra, dec, region=None, sharding_mesh=None):
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        ang2pix = _ang2pix
+    else:
+        ang2pix = shard_map(__ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     if region in [None, "ALL", "GCcomb"]:
         if isinstance(ra, jax.Array):
