@@ -734,8 +734,8 @@ def prepare_AMR(
     if (randoms_coverage < 1).any():
         warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
-    data_isort = local_argsort(data_templates_digitized, axis=1)
-    randoms_isort = local_argsort(randoms_templates_digitized, axis=1)
+    data_isort = local_argsort(data_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
+    randoms_isort = local_argsort(randoms_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
 
     return AMR_args(
         data_regions=data_regions,
