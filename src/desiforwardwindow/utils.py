@@ -1,5 +1,6 @@
 """Shared utility functions **for the internal libraries**."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, make_dataclass
 from functools import partial
 from typing import Any
@@ -159,6 +160,33 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
             return jnp.argsort(arr, axis=axis)
 
         return _local_argsort(arr, axis)
+
+
+def local_concatenate(arrays: Sequence[jax.Array], axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None) -> jax.Array:
+    """
+    Sharding-local implementation of :py:func:`jnp.concatenate`.
+
+    Parameters
+    ----------
+    arrays: Sequence[jax.Array]
+        Arrays to sort, all sharded the **same** way.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Locally concatenated array.
+    """
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        return jnp.concatenate(arrays=arrays, axis=axis)
+    else:
+
+        @shard_map(in_specs=([array.sharding.spec for array in arrays], None), out_specs=(arrays[0].sharding.spec), mesh=sharding_mesh)
+        def _local_concatenate(arrays, axis):
+            return jnp.concatenate(arrays, axis=axis)
+
+        return _local_concatenate(arrays, axis)
 
 
 def apply_wntmp(ntile, ntmp_table, method="ntmp"):
