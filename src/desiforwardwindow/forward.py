@@ -625,7 +625,7 @@ def prepare_AMR(
     n_bins: int = 10,
 ) -> AMR_args:
     """
-    Precompute all arguments necessary to get Angular Mode Removal in :py:func:`mock_survey_FKP`.
+    Precompute all arguments necessary to get Angular Mode Removal in :py:func:`mock_survey_catalog`.
 
     Parameters
     ----------
@@ -650,8 +650,12 @@ def prepare_AMR(
 
     Returns
     -------
-    AMRArgsFKP
-        Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
+    AMR_args
+        Dataclass containing all information needed by :py:func:`mock_survey_catalog` to apply AMR.
+
+    Notes
+    -----
+    The digitized templates are offset by (n_bins+2)*n_regions, so that the region can be inferred directly from the digitized value. Since we expect digitized values to span [0, ``n_bins``+1], the offset is ``n_bins``+2.
     """
     # Shard the extra metadata similarly to data/randoms if necessary
     for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
@@ -731,6 +735,9 @@ def prepare_AMR(
         if not randoms_mask.any():
             raise ValueError("No randoms in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
 
+    data_regions = jnp.stack(data_regions)
+    randoms_regions = jnp.stack(randoms_regions)
+
     # pre-computed templates
     data_templates_digitized = jnp.vstack(
         [jnp.full(shape=data_positions.shape[0], dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
@@ -739,14 +746,15 @@ def prepare_AMR(
         [jnp.full(shape=randoms_positions.shape[0], dtype=templates_digitized_r.dtype, fill_value=n_bins - 1), templates_digitized_r.T]
     )
 
+    # Offset the digitized templates depending on the region
+    data_templates_digitized = data_templates_digitized + (n_bins + 2) * (jnp.arange(data_regions.shape[0])[:, None] * data_regions).sum(axis=0)
+    randoms_templates_digitized = randoms_templates_digitized + (n_bins + 2) * (jnp.arange(randoms_regions.shape[0])[:, None] * randoms_regions).sum(axis=0)
+
     if apply_to == "data":
         data_templates_normalized = jnp.vstack([jnp.ones_like(data_positions[:, 0]), templates_normalized_d.T])
     else:
         data_templates_normalized = None
     randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms_positions[:, 0]), templates_normalized_r.T])
-
-    data_regions = jnp.stack(data_regions)
-    randoms_regions = jnp.stack(randoms_regions)
 
     data_coverage = data_regions.sum(axis=0)
     randoms_coverage = randoms_regions.sum(axis=0)
@@ -847,32 +855,29 @@ def apply_AMR(
      * The regions mask should not contain the extremes, ohterwise the output weights for the extremes will be wrong.
      * Regions should not overlap, otherwise weights for multi-region particles will be wrong.
     """
-    data_regions = jnp.atleast_2d(data_regions)  # [:, data_isort]
-    randoms_regions = jnp.atleast_2d(randoms_regions)  # [:, randoms_isort]
+    data_regions = jnp.atleast_2d(data_regions)
+    randoms_regions = jnp.atleast_2d(randoms_regions)
 
-    data_weights = data_weights * data_extremes  # [data_isort]
-    randoms_weights = randoms_weights * randoms_extremes  # [randoms_isort]
-
+    data_weights = data_weights * data_extremes
+    randoms_weights = randoms_weights * randoms_extremes
     # shapes: (regions, N_sys + 1, N_bins)
-    data_binned = jnp.moveaxis(bincount_sorted_vmapped(data_templates_digitized, data_weights * data_regions, data_isort, n_bins, get_sharding_mesh()), -1, 0)
-    randoms_binned = jnp.moveaxis(
-        bincount_sorted_vmapped(randoms_templates_digitized, randoms_weights * randoms_regions, randoms_isort, n_bins, get_sharding_mesh()), -1, 0
+    data_binned_exploded = bincount_sorted_vmapped(
+        data_templates_digitized, data_weights, data_isort, (n_bins + 2) * data_regions.shape[0], get_sharding_mesh()
     )
+    data_binned = jnp.stack(jnp.split(data_binned_exploded, data_regions.shape[0], axis=-1))[..., 1:-1]
 
-    # shape: (regions, N_sys + 1, N_bins + 1,  N_sys + 1)
-    # The last dimension is for the matrix product with the coefficients vector
-    # The middle (N_sys + 1, N_bins + 1) correspond, in spirit, to one big axis
-    randoms_templates_binned = jnp.moveaxis(
-        bincount_sorted_vmapped(
-            randoms_templates_digitized,
-            randoms_weights[None, None, ...] * randoms_regions[:, None, ...] * randoms_templates_normalized[None, ...],
-            randoms_isort,
-            n_bins,
-            get_sharding_mesh(),
-        ),
-        -2,
-        0,
+    randoms_binned_exploded = bincount_sorted_vmapped(
+        randoms_templates_digitized, randoms_weights, randoms_isort, (n_bins + 2) * randoms_regions.shape[0], get_sharding_mesh()
     )
+    randoms_binned = jnp.stack(jnp.split(randoms_binned_exploded, randoms_regions.shape[0], axis=-1))[..., 1:-1]
+
+    # shape: (regions, N_sys + 1, N_bins,  N_sys + 1)
+    # The last dimension is for the matrix product with the coefficients vector
+    # The rightmost (N_sys + 1, N_bins) correspond, in spirit, to one big axis
+    randoms_templates_binned_exploded = bincount_sorted_vmapped(
+        randoms_templates_digitized, randoms_weights * randoms_templates_normalized, randoms_isort, (n_bins + 2) * randoms_regions.shape[0], get_sharding_mesh()
+    )
+    randoms_templates_binned = jnp.stack(jnp.split(randoms_templates_binned_exploded, randoms_regions.shape[0], axis=1))[..., 1:-1, :]
 
     normalization = (randoms_regions * randoms_weights).sum(axis=1) / (data_regions * data_weights).sum(axis=1)
     prefactor = jnp.where(randoms_binned != 0, jnp.sqrt(normalization[:, None, None] / randoms_binned), 0.0)
