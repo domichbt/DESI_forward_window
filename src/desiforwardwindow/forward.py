@@ -1,5 +1,6 @@
 """Forward modeling of observational effects."""
 
+import itertools
 from typing import Literal
 from warnings import warn
 
@@ -17,7 +18,7 @@ from jaxpower import (
 from jaxpower.mesh import get_sharding_mesh, make_array_from_process_local_data
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
-from .utils import bincount, bincount_2d, bincount_sorted, local_argsort, make_jax_dataclass, select_region
+from .utils import bincount, bincount_2d, bincount_sorted, local_argsort, local_concatenate, local_split, make_jax_dataclass, select_region
 
 AMRArgsFKP = make_jax_dataclass(
     class_name="AMRArgsFKP",
@@ -402,8 +403,8 @@ RIC_args = make_jax_dataclass(
 
 
 def prepare_RIC(
-    data: ParticleField,
-    randoms: ParticleField,
+    data: list[ParticleField],
+    randoms: list[ParticleField],
     regions: list[str],
     # RIC specific parameters
     n_bins: int,
@@ -414,10 +415,10 @@ def prepare_RIC(
 
     Parameters
     ----------
-    data : ParticleField
-        Field containing positions and weights of the data particles.
-    randoms : ParticleField
-        Field containing positions and weights of the randoms particles.
+    data : list[ParticleField]
+        Fields containing positions and weights of the data particles.
+    randoms : list[ParticleField]
+        Fields containing positions and weights of the randoms particles.
     regions : list[str]
         Regions to split data in.
     n_bins : int
@@ -430,25 +431,39 @@ def prepare_RIC(
     RIC_args
         Custom pytree class that contains all necessary information to applying RIC in :py:func:`mock_survey_catalog`.
     """
-    boxcenter = data.attrs.boxcenter
-    boxsize = data.attrs.boxsize
-    dmin = jnp.min(boxcenter - boxsize / 2.0)
-    dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((boxcenter + boxsize / 2.0) ** 2))
+    # locally concatenate all data and randoms
+    sharding_mesh = get_sharding_mesh()
+    data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+
+    # Get minimal and maximal distance for binning
+    dmin, dmax = jnp.inf, 0.0
+    for ddata in data:
+        corners = jnp.stack([ddata.attrs.boxcenter - ddata.attrs.boxsize / 2.0, ddata.attrs.boxcenter + ddata.attrs.boxsize / 2.0])
+        cube_mins = jnp.min(corners, axis=0)
+        cube_maxs = jnp.max(corners, axis=0)
+        if (cube_mins < 0).all() and (cube_maxs > 0).all():
+            dmin = 0.0
+        else:
+            projection = jnp.clip(jnp.zeros(3), cube_mins, cube_maxs)
+            dmin = min(dmin, jnp.linalg.norm(projection))
+        dmax = max(dmax, (1.0 + 1e-9) * jnp.linalg.norm(jnp.max(jnp.abs(corners), axis=0)))
+
     distance_edges = jnp.linspace(dmin, dmax, n_bins)
-    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
-    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
+
+    data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
     data_distances_digitized = jnp.digitize(data_distances, bins=distance_edges)  # could be made faster with jnp.floor
     randoms_distances_digitized = jnp.digitize(randoms_distances, bins=distance_edges)
 
     # region selection
-    data_ra = (jnp.arctan2(data.positions[..., 1], data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    randoms_ra = (jnp.arctan2(randoms.positions[..., 1], randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
-    randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+    data_ra = (jnp.arctan2(data_positions[..., 1], data_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(randoms_positions[..., 1], randoms_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(data_positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(randoms_positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
     data_regions = []
     randoms_regions = []
-    sharding_mesh = get_sharding_mesh()
 
     for region in regions:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
@@ -595,14 +610,15 @@ AMR_args = make_jax_dataclass(
 
 
 def prepare_AMR(
-    data: ParticleField,
-    randoms: ParticleField,
-    redshifts: tuple[jnp.ndarray, jnp.ndarray],
+    data: list[ParticleField],
+    randoms: list[ParticleField],
+    data_redshifts: list[jax.Array],
+    randoms_redshifts: list[jax.Array],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     apply_to: Literal["data", "randoms"],
     # AMR specific data
-    template_values_data: jnp.ndarray,
-    template_values_randoms: jnp.ndarray,
+    template_values_data: jax.Array | list[jax.Array],
+    template_values_randoms: jax.Array | list[jax.Array],
     # AMR specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
@@ -613,10 +629,14 @@ def prepare_AMR(
 
     Parameters
     ----------
-    data : ParticleField
-        Field containing positions and weights of the data particles.
-    randoms : ParticleField
-        Field containing positions and weights of the randoms particles.
+    data : list[ParticleField]
+        Fields containing positions and weights of the data particles.
+    randoms : list[ParticleField]
+        Fields containing positions and weights of the randoms particles.
+    data_redshifts: list[jax.Array]
+        Data redshifts for all catalogs.
+    randoms_redshifts: list[jax.Array]
+        Randoms redshifts for all catalogs.
     template_values_data : jnp.ndarray
         Values of the templates for the data.
     template_values_randoms : jnp.ndarray
@@ -633,30 +653,38 @@ def prepare_AMR(
     AMRArgsFKP
         Dataclass containing all information needed by :py:func:`mock_survey_FKP` to apply AMR.
     """
-    data_redshifts = redshifts[0]
-    randoms_redshifts = redshifts[1]
-
     # Shard the extra metadata similarly to data/randoms if necessary
-    if data.exchange_direct is not None:
-        template_values_data = data.exchange_direct(make_array_from_process_local_data(template_values_data, pad="mean"), pad=0.0)
-        data_redshifts = data.exchange_direct(make_array_from_process_local_data(data_redshifts, pad=0.0), pad=0.0)
-    else:
-        template_values_data = jnp.array(template_values_data)
-        data_redshifts = jnp.array(data_redshifts)
-    if randoms.exchange_direct is not None:
-        template_values_randoms = randoms.exchange_direct(make_array_from_process_local_data(template_values_randoms, pad="mean"), pad=0.0)
-        randoms_redshifts = randoms.exchange_direct(make_array_from_process_local_data(randoms_redshifts, pad=0.0), pad=0.0)
-    else:
-        template_values_randoms = jnp.array(template_values_randoms)
-        randoms_redshifts = jnp.array(randoms_redshifts)
+    for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
+        if ddata.exchange_direct is not None:
+            template_values_data[i] = ddata.exchange_direct(make_array_from_process_local_data(template_values_data[i], pad="mean"), pad=0.0)
+            data_redshifts[i] = data.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
+        else:
+            template_values_data[i] = jnp.array(template_values_data[i])
+            data_redshifts[i] = jnp.array(dredshifts)
+        if rrandoms.exchange_direct is not None:
+            template_values_randoms[i] = rrandoms.exchange_direct(make_array_from_process_local_data(template_values_randoms[i], pad="mean"), pad=0.0)
+            randoms_redshifts[i] = rrandoms.exchange_direct(make_array_from_process_local_data(rredshifts, pad=0.0), pad=0.0)
+        else:
+            template_values_randoms[i] = jnp.array(template_values_randoms[i])
+            randoms_redshifts[i] = jnp.array(rredshifts)
+
+    # Locally concatenate, preserving the sharding
+    sharding_mesh = get_sharding_mesh()
+    data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate(data_redshifts, axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate(randoms_redshifts, axis=0, sharding_mesh=sharding_mesh)
+    template_values_data = local_concatenate(template_values_data, axis=0, sharding_mesh=sharding_mesh)
+    template_values_randoms = local_concatenate(template_values_randoms, axis=0, sharding_mesh=sharding_mesh)
+    # Now proceed as usual
 
     # Select the regions
-    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
-    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
-    data_ra = (jnp.arctan2(data.positions[..., 1], data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    randoms_ra = (jnp.arctan2(randoms.positions[..., 1], randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
-    randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+    data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(data_positions[..., 1], data_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(randoms_positions[..., 1], randoms_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(data_positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(randoms_positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
     templates_lower_tails = jnp.percentile(template_values_randoms, tail / 2, axis=0, method="higher")
     templates_upper_tails = jnp.percentile(template_values_randoms, 100 - tail / 2, axis=0, method="lower")
@@ -688,8 +716,6 @@ def prepare_AMR(
     data_regions = []
     randoms_regions = []
 
-    sharding_mesh = get_sharding_mesh()
-
     for region, (zmin, zmax) in regions_zranges:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
         data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
@@ -707,17 +733,17 @@ def prepare_AMR(
 
     # pre-computed templates
     data_templates_digitized = jnp.vstack(
-        [jnp.full(shape=data.weights.shape, dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
+        [jnp.full(shape=data_positions.shape[0], dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
     )
     randoms_templates_digitized = jnp.vstack(
-        [jnp.full(shape=randoms.weights.shape, dtype=templates_digitized_r.dtype, fill_value=n_bins - 1), templates_digitized_r.T]
+        [jnp.full(shape=randoms_positions.shape[0], dtype=templates_digitized_r.dtype, fill_value=n_bins - 1), templates_digitized_r.T]
     )
 
     if apply_to == "data":
-        data_templates_normalized = jnp.vstack([jnp.ones_like(data.weights), templates_normalized_d.T])
+        data_templates_normalized = jnp.vstack([jnp.ones_like(data_positions[:, 0]), templates_normalized_d.T])
     else:
         data_templates_normalized = None
-    randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms.weights), templates_normalized_r.T])
+    randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms_positions[:, 0]), templates_normalized_r.T])
 
     data_regions = jnp.stack(data_regions)
     randoms_regions = jnp.stack(randoms_regions)
@@ -896,10 +922,11 @@ NAM_args = make_jax_dataclass(
 
 
 def prepare_NAM(
-    data: ParticleField,
-    randoms: ParticleField,
-    regions_zranges: list,
-    redshifts: tuple[jax.Array, jax.Array],
+    data: list[ParticleField],
+    randoms: list[ParticleField],
+    data_redshifts: list[jax.Array],
+    randoms_redshifts: list[jax.Array],
+    regions_zranges: list[tuple[str, tuple[float, float]]],
     # NAM specific parameters
     nside: int,
     apply_to: Literal["data", "randoms"],
@@ -909,12 +936,16 @@ def prepare_NAM(
 
     Parameters
     ----------
-    data : ParticleField
-        Field containing positions and weights of the data particles.
-    randoms : ParticleField
-        Field containing positions and weights of the randoms particles.
-    regions : list[str]
-        Regions to split data in.
+    data : list[ParticleField]
+        Fields containing positions and weights of the data particles.
+    randoms : list[ParticleField]
+        Fields containing positions and weights of the randoms particles.
+    data_redshifts: list[jax.Array]
+        Data redshifts for all catalogs.
+    randoms_redshifts: list[jax.Array]
+        Randoms redshifts for all catalogs.
+    regions_zranges: list[tuple[str, tuple[float, float]]]
+        Regions and redshift ranges to split data in.
     nside : int
         NSIDE to use for healpixelization.
     apply_to : Literal["data", "randoms"]
@@ -929,14 +960,18 @@ def prepare_NAM(
     -----
     Healpix manipulation is always done in ``RING`` scheme.
     """
-    data_redshifts = redshifts[0]
-    randoms_redshifts = redshifts[1]
-
     # Shard the extra metadata similarly to data/randoms if necessary
-    if data.exchange_direct is not None:
-        data_redshifts = data.exchange_direct(make_array_from_process_local_data(data_redshifts, pad=0.0), pad=0.0)
-    if randoms.exchange_direct is not None:
-        randoms_redshifts = randoms.exchange_direct(make_array_from_process_local_data(randoms_redshifts, pad=0.0), pad=0.0)
+    for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
+        if ddata.exchange_direct is not None:
+            data_redshifts[i] = ddata.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
+        if rrandoms.exchange_direct is not None:
+            randoms_redshifts[i] = rrandoms.exchange_direct(make_array_from_process_local_data(rredshifts, pad=0.0), pad=0.0)
+    # Locally concatenate, preserving the sharding
+    sharding_mesh = get_sharding_mesh()
+    data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate(data_redshifts, axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate(randoms_redshifts, axis=0, sharding_mesh=sharding_mesh)
 
     def _vec2pix(positions):
         import healpy as hp
@@ -954,15 +989,15 @@ def prepare_NAM(
         vec2pix = jax.shard_map(vec2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     # Select the regions
-    data_distances = jnp.sqrt(jnp.power(data.positions, 2).sum(axis=-1))
-    randoms_distances = jnp.sqrt(jnp.power(randoms.positions, 2).sum(axis=-1))
-    data_ra = (jnp.arctan2(data.positions[..., 1], data.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    randoms_ra = (jnp.arctan2(randoms.positions[..., 1], randoms.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-    data_dec = jnp.arcsin(data.positions[..., 2] / data_distances) * 180 / jnp.pi
-    randoms_dec = jnp.arcsin(randoms.positions[..., 2] / randoms_distances) * 180 / jnp.pi
+    data_distances = jnp.sqrt(jnp.power(data_positions, 2).sum(axis=-1))
+    randoms_distances = jnp.sqrt(jnp.power(randoms_positions, 2).sum(axis=-1))
+    data_ra = (jnp.arctan2(data_positions[..., 1], data_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    randoms_ra = (jnp.arctan2(randoms_positions[..., 1], randoms_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
+    data_dec = jnp.arcsin(data_positions[..., 2] / data_distances) * 180 / jnp.pi
+    randoms_dec = jnp.arcsin(randoms_positions[..., 2] / randoms_distances) * 180 / jnp.pi
 
-    data_pixels = vec2pix(data.positions)
-    randoms_pixels = vec2pix(randoms.positions)
+    data_pixels = vec2pix(data_positions)
+    randoms_pixels = vec2pix(randoms_positions)
 
     data_regions = []
     randoms_regions = []
@@ -1082,24 +1117,7 @@ def apply_NAM(
     return nam_weights.sum(axis=range(nam_weights.ndim - 1)) + jnp.invert(randoms_regions.any(axis=0))  # sum over regions and add 1 where no region
 
 
-def mock_survey_catalog(
-    theory: ObservableTree,
-    seed: jnp.ndarray,
-    los: Literal["local", "x", "y", "z"],
-    unitary_amplitude: bool,
-    # Data catalog and effects
-    fkp_field: FKPField,
-    ric_args: RIC_args | None,
-    amr_args: AMR_args | None,
-    nam_args: NAM_args | None,
-    # Final P(k) estimation
-    binner: BinMesh2SpectrumPoles,
-    fkp_norm: jnp.ndarray,
-    # For region renormalization
-    data_regions: list[jnp.ndarray] | None = None,
-    randoms_regions: list[jnp.ndarray] | None = None,
-):
-    # don't rename mock_survey_FKP for now, for testing purposes
+def _read_data(fkp_field: FKPField, theory: ObservableTree, seed: jax.Array, los: Literal["local", "x", "y", "z"], unitary_amplitude: bool):
     mattrs = fkp_field.attrs
     mesh = generate_anisotropic_gaussian_mesh(
         mattrs,
@@ -1108,15 +1126,47 @@ def mock_survey_catalog(
         los=los,
         unitary_amplitude=unitary_amplitude,
     )
-    # Paint it on the catalog -> catalog with geometry and ""clustering""
     data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
-    randoms = fkp_field.randoms
     del mesh
+    return fkp_field.clone(data=data)
 
+
+def _get_pk(fkp_field, fkp_norm, binner, los):
+    num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
+    fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
+    del fkp_field
+    pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
+    return pk.clone(
+        norm=fkp_norm,
+        num_shotnoise=num_shotnoise,
+    )
+
+
+def mock_survey_catalog(
+    theory: ObservableTree,
+    seed: jax.Array,
+    los: Literal["local", "x", "y", "z"],
+    unitary_amplitude: bool,
+    # Data catalog and effects
+    fkp_fields: list[FKPField],
+    ric_args: RIC_args | None,
+    amr_args: AMR_args | None,
+    nam_args: NAM_args | None,
+    # Final P(k) estimation
+    binner: BinMesh2SpectrumPoles,
+    fkp_norms: list[jnp.ndarray],
+    # For region renormalization (need to be concatenated if multiple catalogs)
+    data_regions: list[jnp.ndarray] | None = None,
+    randoms_regions: list[jnp.ndarray] | None = None,
+):
+    sharding_mesh = get_sharding_mesh()
+    fkp_fields = [_read_data(fkp_field, theory, seed, los, unitary_amplitude) for fkp_field in fkp_fields]
+    data_weights = local_concatenate([fkp_field.data.weights for fkp_field in fkp_fields], axis=0, sharding_mesh=sharding_mesh)
+    randoms_weights = local_concatenate([fkp_field.randoms.weights for fkp_field in fkp_fields], axis=0, sharding_mesh=sharding_mesh)
     if ric_args is not None:
         ric_weights = apply_RIC(
-            data_weights=data.weights,
-            randoms_weights=randoms.weights,
+            data_weights=data_weights,
+            randoms_weights=randoms_weights,
             data_regions=ric_args.data_regions,
             randoms_regions=ric_args.randoms_regions,
             data_distances_digitized=ric_args.data_distances_digitized,
@@ -1125,14 +1175,13 @@ def mock_survey_catalog(
             apply_to=ric_args.apply_to,
         )
         if ric_args.apply_to == "data":
-            data = data.clone(weights=data.weights * ric_weights)
+            data_weights = data_weights * ric_weights
         else:
-            randoms = randoms.clone(weights=randoms.weights * ric_weights)
-
+            randoms_weights = randoms_weights * ric_weights
     if amr_args is not None:
         amr_weights = apply_AMR(
-            data_weights=data.weights,
-            randoms_weights=randoms.weights,
+            data_weights=data_weights,
+            randoms_weights=randoms_weights,
             data_regions=amr_args.data_regions,
             randoms_regions=amr_args.randoms_regions,
             data_extremes=amr_args.data_extremes,
@@ -1147,14 +1196,14 @@ def mock_survey_catalog(
             apply_to=amr_args.apply_to,
         )
         if amr_args.apply_to == "data":
-            data = data.clone(weights=data.weights * amr_weights)
+            data_weights = data_weights * amr_weights
         else:
-            randoms = randoms.clone(weights=randoms.weights * amr_weights)
+            randoms_weights = randoms_weights * amr_weights
 
     if nam_args is not None:
         nam_weights = apply_NAM(
-            data_weights=data.weights,
-            randoms_weights=randoms.weights,
+            data_weights=data_weights,
+            randoms_weights=randoms_weights,
             data_regions=nam_args.data_regions,
             randoms_regions=nam_args.randoms_regions,
             data_pixels=nam_args.data_pixels,
@@ -1163,29 +1212,37 @@ def mock_survey_catalog(
             apply_to=nam_args.apply_to,
         )
         if nam_args.apply_to == "data":
-            data = data.clone(weights=data.weights * nam_weights)
+            data_weights = data_weights * nam_weights
         else:
-            randoms = randoms.clone(weights=randoms.weights * nam_weights)
+            randoms_weights = randoms_weights * nam_weights
 
     # global randoms renormalization per region
     if randoms_regions is not None:
-        global_alpha = data.weights.sum() / randoms.weights.sum()
-        correction = jnp.ones_like(randoms.weights)
+        global_alpha = data_weights.sum() / randoms_weights.sum()
+        correction = jnp.ones_like(randoms_weights)
         for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
-            alpha = jnp.where(data_region, data.weights, 0.0).sum() / jnp.where(randoms_region, randoms.weights, 0.0).sum()
+            alpha = jnp.where(data_region, data_weights, 0.0).sum() / jnp.where(randoms_region, randoms_weights, 0.0).sum()
             # Multiply by one outside mask and alpha/global_alpha inside
             correction *= jnp.where(randoms_region, alpha / global_alpha, 1.0)
             # jnp.invert(randoms_region) * 1.0 + randoms_region * alpha / global_alpha
-        randoms = randoms.clone(weights=randoms.weights * correction)
-    fkp_field = fkp_field.clone(data=data, randoms=randoms)
-    num_shotnoise = compute_fkp2_shotnoise(fkp_field, bin=binner)
-    fkp_mesh = fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
-    del fkp_field
-    pk = compute_mesh2_spectrum(fkp_mesh, bin=binner, los={"local": "firstpoint"}.get(los, los))
-    return pk.clone(
-        norm=fkp_norm,
-        num_shotnoise=num_shotnoise,
-    )
+        randoms_weights = randoms_weights * correction
+
+    # Rebuild FKP fields
+    # Split back the weights
+    split_indices_data = list(itertools.accumulate([fkp_field.data.weights.shape[0] for fkp_field in fkp_fields]))[:-1]
+    jax.block_until_ready(split_indices_data)
+    data_weights = local_split(data_weights, split_indices_data, axis=0, sharding_mesh=sharding_mesh)
+    split_indices_randoms = list(itertools.accumulate([fkp_field.randoms.weights.shape[0] for fkp_field in fkp_fields]))[:-1]
+    jax.block_until_ready(split_indices_randoms)
+    randoms_weights = local_split(randoms_weights, split_indices_randoms, axis=0, sharding_mesh=sharding_mesh)
+
+    fkp_fields = [
+        fkp_field.clone(data=fkp_field.data.clone(weights=data_weight), randoms=fkp_field.randoms.clone(weights=randoms_weight))
+        for fkp_field, data_weight, randoms_weight in zip(fkp_fields, data_weights, randoms_weights, strict=True)
+    ]
+    pks = [_get_pk(fkp_field, fkp_norm, binner, los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
+    return pks
+    # return jax.tree.map(functools.partial(_get_pk, binner=binner, los=los), fkp_fields, fkp_norms)
 
 
 def mock_survey_FKP(
