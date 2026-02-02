@@ -143,6 +143,8 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
     ----------
     arr : jax.Array
         Array to sort.
+    axis: int | None, optional
+        Axis along which to sort the array, by default None (0). Will also be considered as the sharded axis.
     sharding_mesh : jax.sharding.Mesh | None, optional
         Sharding mesh to use for the ``shard_map``, by default None.
 
@@ -154,8 +156,12 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
     if (sharding_mesh is None) or sharding_mesh.empty:
         return jnp.argsort(arr, axis=axis)
     else:
+        if axis is not None:
+            spec = P(*((None,) * axis + (sharding_mesh.axis_names,) + (None,) * (arr.ndim - 1 - axis)))
+        else:
+            spec = P(sharding_mesh.axis_names)
 
-        @shard_map(in_specs=(arr.sharding.spec, None), out_specs=(arr.sharding.spec), mesh=sharding_mesh)
+        @shard_map(in_specs=(spec, None), out_specs=spec, mesh=sharding_mesh)
         def _local_argsort(arr, axis):
             return jnp.argsort(arr, axis=axis)
 
@@ -169,7 +175,9 @@ def local_concatenate(arrays: Sequence[jax.Array], axis: int | None = None, shar
     Parameters
     ----------
     arrays: Sequence[jax.Array]
-        Arrays to concatenate, all sharded the **same** way.
+        Arrays to concatenate, all sharded the **same** way, along the **first** axis.
+    axis : int | None, optional
+        Axis along which to concatenate the arrays, by default None (0). Will also be considered as the sharded axis.
     sharding_mesh : jax.sharding.Mesh | None, optional
         Sharding mesh to use for the ``shard_map``, by default None.
 
@@ -181,8 +189,12 @@ def local_concatenate(arrays: Sequence[jax.Array], axis: int | None = None, shar
     if (sharding_mesh is None) or sharding_mesh.empty:
         return jnp.concatenate(arrays=arrays, axis=axis)
     else:
+        if axis is not None:
+            spec = [P(*((None,) * axis + (sharding_mesh.axis_names,) + (None,) * (array.ndim - 1 - axis))) for array in arrays]
+        else:
+            spec = [P(sharding_mesh.axis_names)] * len(arrays)
 
-        @shard_map(in_specs=([array.sharding.spec for array in arrays], None), out_specs=(arrays[0].sharding.spec), mesh=sharding_mesh)
+        @shard_map(in_specs=(spec, None), out_specs=spec[0], mesh=sharding_mesh)
         def _local_concatenate(arrays, axis):
             return jnp.concatenate(arrays, axis=axis)
 
@@ -202,7 +214,7 @@ def local_split(
     indices_or_sections : Sequence[int]
         Indices or sections to split the array. These indices should be global; the function will handle local splitting. Indices must all be divisible by the number of shards along ``axis``.
     axis : int | None, optional
-        Axis along which to split the array, by default None (0).
+        Axis along which to split the array, by default None (0). This axis will also be considered as the sharded axis.
     sharding_mesh : jax.sharding.Mesh | None, optional
         Sharding mesh to use for the ``shard_map``, by default None.
 
@@ -218,9 +230,14 @@ def local_split(
     if (sharding_mesh is None) or sharding_mesh.empty:
         return jnp.split(ary=ary, indices_or_sections=indices_or_sections, axis=axis)
     else:
-        global_size = ary.shape[axis]
+        if axis is not None:
+            spec = P(*((None,) * axis + (sharding_mesh.axis_names,) + (None,) * (ary.ndim - 1 - axis)))
+        else:
+            spec = P(sharding_mesh.axis_names)
 
-        @shard_map(in_specs=(ary.sharding.spec, None, None), out_specs=(ary.sharding.spec), mesh=sharding_mesh)
+        global_size = ary.shape[axis or 0]
+
+        @shard_map(in_specs=(spec, None, None), out_specs=spec, mesh=sharding_mesh)
         def _local_split(ary, indices_or_sections, axis):
             local_size = ary.shape[axis]
             n_shards = global_size // local_size
