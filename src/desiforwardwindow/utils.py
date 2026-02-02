@@ -169,7 +169,7 @@ def local_concatenate(arrays: Sequence[jax.Array], axis: int | None = None, shar
     Parameters
     ----------
     arrays: Sequence[jax.Array]
-        Arrays to sort, all sharded the **same** way.
+        Arrays to concatenate, all sharded the **same** way.
     sharding_mesh : jax.sharding.Mesh | None, optional
         Sharding mesh to use for the ``shard_map``, by default None.
 
@@ -187,6 +187,46 @@ def local_concatenate(arrays: Sequence[jax.Array], axis: int | None = None, shar
             return jnp.concatenate(arrays, axis=axis)
 
         return _local_concatenate(arrays, axis)
+
+
+def local_split(
+    ary: jax.Array, indices_or_sections: jax.Array | Sequence[int], axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None
+) -> jax.Array:
+    """
+    Sharding-local implementation of :py:func:`jnp.split`.
+
+    Parameters
+    ----------
+    ary: jax.Array
+        Array to split.
+    indices_or_sections : Sequence[int]
+        Indices or sections to split the array. These indices should be global; the function will handle local splitting. Indices must all be divisible by the number of shards along ``axis``.
+    axis : int | None, optional
+        Axis along which to split the array, by default None (0).
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Locally split array.
+
+    Notes
+    -----
+    This function will not raise an error if the indices are not compatible with local splitting; it is the user's responsibility to ensure that indices are divisible by the number of shards along ``axis``.
+    """
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        return jnp.split(ary=ary, indices_or_sections=indices_or_sections, axis=axis)
+    else:
+        global_size = ary.shape[axis]
+
+        @shard_map(in_specs=(ary.sharding.spec, None, None), out_specs=(ary.sharding.spec), mesh=sharding_mesh)
+        def _local_split(ary, indices_or_sections, axis):
+            local_size = ary.shape[axis]
+            n_shards = global_size // local_size
+            return jnp.split(ary, [idx // n_shards for idx in indices_or_sections], axis=axis)
+
+        return _local_split(ary, indices_or_sections, axis)
 
 
 def apply_wntmp(ntile, ntmp_table, method="ntmp"):
