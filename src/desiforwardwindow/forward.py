@@ -1165,7 +1165,8 @@ def mock_survey_catalog(
     randoms_regions: list[jnp.ndarray] | None = None,
 ):
     sharding_mesh = get_sharding_mesh()
-    fkp_fields = [_read_data(fkp_field, theory, seed, los, unitary_amplitude) for fkp_field in fkp_fields]
+    keys = jax.random.split(seed, len(fkp_fields))
+    fkp_fields = [_read_data(fkp_field, theory, key, los, unitary_amplitude) for fkp_field, key in zip(fkp_fields, keys, strict=True)]
     data_weights = local_concatenate([fkp_field.data.weights for fkp_field in fkp_fields], axis=0, sharding_mesh=sharding_mesh)
     randoms_weights = local_concatenate([fkp_field.randoms.weights for fkp_field in fkp_fields], axis=0, sharding_mesh=sharding_mesh)
     if ric_args is not None:
