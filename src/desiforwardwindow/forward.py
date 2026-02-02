@@ -661,7 +661,7 @@ def prepare_AMR(
     for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
         if ddata.exchange_direct is not None:
             template_values_data[i] = ddata.exchange_direct(make_array_from_process_local_data(template_values_data[i], pad="mean"), pad=0.0)
-            data_redshifts[i] = data.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
+            data_redshifts[i] = ddata.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
         else:
             template_values_data[i] = jnp.array(template_values_data[i])
             data_redshifts[i] = jnp.array(dredshifts)
