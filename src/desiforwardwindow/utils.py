@@ -48,40 +48,6 @@ def bincount(x: jax.Array, weights: jax.Array, minlength: int = 0, length: int |
     return _my_bincount(x, accumulator, weights)
 
 
-def bincount_2d(x: jnp.ndarray, weights: jnp.ndarray, minlength: int = 0, length: int | None = None) -> jnp.ndarray:
-    """
-    Perform a bincount over the second axis of an integer 2D array. Must set ``length`` for this function to be jittable.
-
-    Parameters
-    ----------
-    x : jnp.ndarray
-        A 2D array of shape (S, N).
-    weights : jnp.ndarray
-        Array of weights, shape (N) or (N, ...).
-    minlength : int, optional
-        A minimum number of bins for the output array, by default 0
-    length : int or None, optional
-        Optional fixed length for the output array. Must be set for this to be jittable.
-
-    Returns
-    -------
-    jnp.ndarray
-        The result of binning the input array along the second axis, *ie* an array of shape (D, x.max() + 1).
-        If the weights are multi-dimentional, the returned array has shape (S, x.max() + 1, ...).
-        If ``length`` was set, replace ``x.xmax() + 1`` with ``length``.
-    """
-    if length is None:
-        length = max(x.max() + 1, minlength)
-    return jax.lax.map(
-        f=partial(
-            _my_bincount,
-            accumulator=jnp.zeros((length + 1, *weights.shape[1:]), dtype=weights.dtype),
-            weights=weights,
-        ),
-        xs=x,
-    )
-
-
 def bincount_sorted(
     x: jax.Array, weights: jax.Array, rearrange: jax.Array | None, length: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None
 ) -> jax.Array:
