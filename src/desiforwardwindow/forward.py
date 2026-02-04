@@ -297,6 +297,11 @@ def prepare_AMR(
     -----
     The digitized templates are offset by (n_bins+2)*n_regions, so that the region can be inferred directly from the digitized value. Since we expect digitized values to span [0, ``n_bins``+1], the offset is ``n_bins``+2.
     """
+    # Before any sharding or exchange, compute the 0.5th and 99.5th percentiles of the templates in the randoms
+    # This will avoid any problems with padding particles originating from exchange
+    templates_lower_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0), tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0), 100 - tail / 2, axis=0, method="lower")
+
     # Shard the extra metadata similarly to data/randoms if necessary
     for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
         if ddata.exchange_direct is not None:
@@ -329,9 +334,6 @@ def prepare_AMR(
     randoms_ra = (jnp.arctan2(randoms_positions[..., 1], randoms_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
     data_dec = jnp.arcsin(data_positions[..., 2] / data_distances) * 180 / jnp.pi
     randoms_dec = jnp.arcsin(randoms_positions[..., 2] / randoms_distances) * 180 / jnp.pi
-
-    templates_lower_tails = jnp.percentile(template_values_randoms, tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.percentile(template_values_randoms, 100 - tail / 2, axis=0, method="lower")
 
     mask_extremes_d = jnp.all((template_values_data >= templates_lower_tails) & (template_values_data <= templates_upper_tails), axis=1)
     mask_extremes_r = jnp.all((template_values_randoms >= templates_lower_tails) & (template_values_randoms <= templates_upper_tails), axis=1)
