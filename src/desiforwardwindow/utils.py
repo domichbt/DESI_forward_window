@@ -1,7 +1,7 @@
 """Shared utility functions **for the internal libraries**."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, make_dataclass
-from functools import partial
 from typing import Any
 
 import healpy as hp
@@ -47,40 +47,6 @@ def bincount(x: jax.Array, weights: jax.Array, minlength: int = 0, length: int |
     return _my_bincount(x, accumulator, weights)
 
 
-def bincount_2d(x: jnp.ndarray, weights: jnp.ndarray, minlength: int = 0, length: int | None = None) -> jnp.ndarray:
-    """
-    Perform a bincount over the second axis of an integer 2D array. Must set ``length`` for this function to be jittable.
-
-    Parameters
-    ----------
-    x : jnp.ndarray
-        A 2D array of shape (S, N).
-    weights : jnp.ndarray
-        Array of weights, shape (N) or (N, ...).
-    minlength : int, optional
-        A minimum number of bins for the output array, by default 0
-    length : int or None, optional
-        Optional fixed length for the output array. Must be set for this to be jittable.
-
-    Returns
-    -------
-    jnp.ndarray
-        The result of binning the input array along the second axis, *ie* an array of shape (D, x.max() + 1).
-        If the weights are multi-dimentional, the returned array has shape (S, x.max() + 1, ...).
-        If ``length`` was set, replace ``x.xmax() + 1`` with ``length``.
-    """
-    if length is None:
-        length = max(x.max() + 1, minlength)
-    return jax.lax.map(
-        f=partial(
-            _my_bincount,
-            accumulator=jnp.zeros((length + 1, *weights.shape[1:]), dtype=weights.dtype),
-            weights=weights,
-        ),
-        xs=x,
-    )
-
-
 def bincount_sorted(
     x: jax.Array, weights: jax.Array, rearrange: jax.Array | None, length: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None
 ) -> jax.Array:
@@ -109,27 +75,29 @@ def bincount_sorted(
     -----
     If a sharding mesh is provided, ``x`` need only be sorted locally on each shard. Such functionality is provided by e.g. :py:func:`desiforwardwindow.utils.local_sort`. This avoids unnecessary communication between devices.
     """
-    weights = jnp.moveaxis(weights, -1, 0)
-    if rearrange is not None:
-        x = x[rearrange]
-        weights = weights[rearrange]
     if (sharding_mesh is None) or sharding_mesh.empty:
+        if rearrange is not None:
+            x = x[rearrange]
+            weights = jnp.moveaxis(weights, -1, 0)[rearrange]
         return jax.ops.segment_sum(data=weights, segment_ids=x, num_segments=length, indices_are_sorted=True)
     else:
 
         @shard_map(
-            in_specs=(P((*sharding_mesh.axis_names,), *([None] * (weights.ndim - 1))), P((*sharding_mesh.axis_names,)), None),
+            in_specs=(P(*([None] * (weights.ndim - 1)), (*sharding_mesh.axis_names,)), P((*sharding_mesh.axis_names,)), None, P((*sharding_mesh.axis_names,))),
             out_specs=P(None),
             mesh=sharding_mesh,
             check_vma=False,  # TODO: remove when jax updates to 0.8.3
         )
-        def _bincount_sorted(data, segment_ids, num_segments):
+        def _bincount_sorted(data, segment_ids, num_segments, rearrange):
+            if rearrange is not None:
+                segment_ids = segment_ids[rearrange]
+                data = jnp.moveaxis(data, -1, 0)[rearrange]
             return jax.lax.psum(
                 jax.ops.segment_sum(data=data, segment_ids=segment_ids, num_segments=num_segments, indices_are_sorted=True),
                 axis_name=(*sharding_mesh.axis_names,),
             )
 
-        return _bincount_sorted(weights, x, length)
+        return _bincount_sorted(weights, x, length, rearrange)
 
 
 def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None) -> jax.Array:
@@ -140,6 +108,8 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
     ----------
     arr : jax.Array
         Array to sort.
+    axis: int | None, optional
+        Axis along which to sort the array, by default None (0). Will also be considered as the sharded axis.
     sharding_mesh : jax.sharding.Mesh | None, optional
         Sharding mesh to use for the ``shard_map``, by default None.
 
@@ -151,12 +121,94 @@ def local_argsort(arr: jax.Array, axis: int | None = None, sharding_mesh: jax.sh
     if (sharding_mesh is None) or sharding_mesh.empty:
         return jnp.argsort(arr, axis=axis)
     else:
+        if axis is not None:
+            spec = P(*((None,) * axis + (sharding_mesh.axis_names,) + (None,) * (arr.ndim - 1 - axis)))
+        else:
+            spec = P(sharding_mesh.axis_names)
 
-        @shard_map(in_specs=(P((*sharding_mesh.axis_names,)), None), out_specs=(P((*sharding_mesh.axis_names,))))
+        @shard_map(in_specs=(spec, None), out_specs=spec, mesh=sharding_mesh)
         def _local_argsort(arr, axis):
             return jnp.argsort(arr, axis=axis)
 
         return _local_argsort(arr, axis)
+
+
+def local_concatenate(arrays: Sequence[jax.Array], axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None) -> jax.Array:
+    """
+    Sharding-local implementation of :py:func:`jnp.concatenate`.
+
+    Parameters
+    ----------
+    arrays: Sequence[jax.Array]
+        Arrays to concatenate, all sharded the **same** way, along the **first** axis.
+    axis : int | None, optional
+        Axis along which to concatenate the arrays, by default None (0). Will also be considered as the sharded axis.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Locally concatenated array.
+    """
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        return jnp.concatenate(arrays=arrays, axis=axis)
+    else:
+        if axis is not None:
+            spec = [P(*((None,) * axis + (sharding_mesh.axis_names,) + (None,) * (array.ndim - 1 - axis))) for array in arrays]
+        else:
+            spec = [P(sharding_mesh.axis_names)] * len(arrays)
+
+        @shard_map(in_specs=(spec, None), out_specs=spec[0], mesh=sharding_mesh)
+        def _local_concatenate(arrays, axis):
+            return jnp.concatenate(arrays, axis=axis)
+
+        return _local_concatenate(arrays, axis)
+
+
+def local_split(
+    ary: jax.Array, indices_or_sections: jax.Array | Sequence[int], axis: int | None = None, sharding_mesh: jax.sharding.Mesh | None = None
+) -> jax.Array:
+    """
+    Sharding-local implementation of :py:func:`jnp.split`.
+
+    Parameters
+    ----------
+    ary: jax.Array
+        Array to split.
+    indices_or_sections : Sequence[int]
+        Indices or sections to split the array. These indices should be global; the function will handle local splitting. Indices must all be divisible by the number of shards along ``axis``.
+    axis : int | None, optional
+        Axis along which to split the array, by default None (0). This axis will also be considered as the sharded axis.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    jax.Array
+        Locally split array.
+
+    Notes
+    -----
+    This function will not raise an error if the indices are not compatible with local splitting; it is the user's responsibility to ensure that indices are divisible by the number of shards along ``axis``.
+    """
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        return jnp.split(ary=ary, indices_or_sections=indices_or_sections, axis=axis)
+    else:
+        if axis is not None:
+            spec = P(*((None,) * axis + (sharding_mesh.axis_names,) + (None,) * (ary.ndim - 1 - axis)))
+        else:
+            spec = P(sharding_mesh.axis_names)
+
+        global_size = ary.shape[axis or 0]
+
+        @shard_map(in_specs=(spec, None, None), out_specs=spec, mesh=sharding_mesh)
+        def _local_split(ary, indices_or_sections, axis):
+            local_size = ary.shape[axis]
+            n_shards = global_size // local_size
+            return jnp.split(ary, [idx // n_shards for idx in indices_or_sections], axis=axis)
+
+        return _local_split(ary, indices_or_sections, axis)
 
 
 def apply_wntmp(ntile, ntmp_table, method="ntmp"):
@@ -185,30 +237,32 @@ def load_footprint():
     footprint = footprint.DR9Footprint(NSIDE, mask_lmc=False, clear_south=True, mask_around_des=False, cut_desi=False)
 
 
-def select_region(ra, dec, region=None):
-    # print('select', region)
+def __ang2pix(ra, dec):
+    return hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)
 
-    def _ang2pix(ra, dec):
-        return hp.ang2pix(NSIDE, ra, dec, nest=True, lonlat=True)
 
-    def ang2pix(ra, dec):
-        return jax.pure_callback(_ang2pix, jax.ShapeDtypeStruct(ra.shape[:1], jnp.int64), ra, dec)
+def _ang2pix(ra, dec):
+    return jax.pure_callback(__ang2pix, jax.ShapeDtypeStruct(ra.shape[:1], jnp.int64), ra, dec)
 
-    from jax import shard_map
-    from jax.sharding import PartitionSpec as P
-    from jaxpower.mesh import get_sharding_mesh
 
-    sharding_mesh = get_sharding_mesh()
-
-    if sharding_mesh.axis_names:
-        ang2pix = shard_map(ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+def select_region(ra, dec, region=None, sharding_mesh=None):
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        ang2pix = _ang2pix
+    else:
+        ang2pix = shard_map(_ang2pix, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
 
     if region in [None, "ALL", "GCcomb"]:
-        return np.ones_like(ra, dtype="?")
+        if isinstance(ra, jax.Array):
+            return jnp.ones_like(ra, dtype=bool)
+        else:
+            return np.ones_line(ra, dtype=bool)
     mask_ngc = ra > 100 - dec
     mask_ngc &= ra < 280 + dec
     mask_n = mask_ngc & (dec > 32.375)
     mask_s = (~mask_n) & (dec > -25.0)
+    # Force synchronization to avoid hangs with JAX arrays
+    if isinstance(mask_s, jax.Array):
+        mask_s.block_until_ready()
     if region == "NGC":
         return mask_ngc
     if region == "SGC":
@@ -232,7 +286,7 @@ def select_region(ra, dec, region=None):
         return mask_s & (~mask_des)
     if region == "SSGCnoDES":
         return (~mask_ngc) & mask_s & (~mask_des)
-    raise ValueError("unknown region {}".format(region))
+    raise ValueError("unknown region %s", region)
 
 
 def get_clustering_rdzw(

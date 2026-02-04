@@ -55,4 +55,6 @@ ignore-names = [
     "*AMR*",
     "*FKP*",
     "*DESI*",
+    "*SGC*",
+    "*NGC*",
 ]

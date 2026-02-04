@@ -79,6 +79,7 @@ def get_window_spikes(
     mock_survey_kw: dict | None = None,
     static_argnames: list[str] | None = None,
     tmpdir: str | os.PathLike | None = None,
+    survey_names: list[str] | None = None,
 ):
     """
     Estimate the response (window matrix component) of a given observation forward modelling ``mock_survey`` for some fiducial theory input ``theory``.
@@ -88,7 +89,7 @@ def get_window_spikes(
     Parameters
     ----------
     mock_survey : Callable
-        Selection to be forward modeled on ``theory``. Signature should be ``observe(theory, seed, **kwargs) -> Mesh2SpectrumPoles``. Must support jax forward differentation and be jittable.
+        Selection to be forward modeled on ``theory``. Signature should be ``observe(theory, seed, **kwargs) -> list[Mesh2SpectrumPoles]``. Must support jax forward differentation and be jittable.
     theory : lsstypes.BinMesh2SpectrumPoles
         Fiducial theoretical power spectrum for the Jacobian estimation.
     nreal : int, optional
@@ -101,34 +102,43 @@ def get_window_spikes(
         Additional keyword arguments for the ``mock_survey`` function, aside from ``theory`` and ``seed``.
     static_argnames: list[str] | None, optional
         List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
-    tmpdir: str | os.PathLike
+    tmpdir: str | os.PathLike | None
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
+    survey_names: list[str] | None
+        Name of the subdirectory for the power spectra output by ``mock_survey``.
 
     Returns
     -------
-    tuple[lsstypes.WindowMatrix, list[lsstypes.WindowMatrix]]
-        The average window matrix over ``nreal`` realizations and the individual realizations.
+    tuple[list[lsstypes.WindowMatrix], list[list[lsstypes.WindowMatrix]]]
+        The average window matrices over ``nreal`` realizations and the individual realizations.
+
+    Notes
+    -----
+    The individual realizations are returned as a list of length ``nreal``, each entry being a list of ``lsstypes.WindowMatrix`` of length equal to the number of output power spectra of ``mock_survey``.
     """
     mock_survey_kw = mock_survey_kw or {}
     static_argnames = static_argnames or []
-    static_argnames = [*static_argnames, "mock_survey"]
+    static_argnames = [*static_argnames, "mock_surveys"]
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
 
-    # Initialize a list of windows to fill later
-    windows = [None for i in range(nreal)]
-
     # Get some empty theory and observable to use their shapes when creating the window matrix
-    observable = mock_survey(theory, seed=jax.random.key(42), **mock_survey_kw)
-    observable = observable.clone(value=0.0 * observable.value())
+    observables = mock_survey(theory, seed=jax.random.key(42), **mock_survey_kw)
+    observables = [observable.clone(value=0.0 * observable.value()) for observable in observables]
+
+    survey_names = survey_names or [f"survey_{idx_survey:02d}" for idx_survey in range(len(observables))]
+
     theory_zeros = jnp.zeros_like(theory.value())
     # JIT the function retrieving the window component
     get_window = jax.jit(
-        get_window_component,
+        get_windows_component,
         static_argnames=static_argnames,
     )
     if seeds is None:
         seeds = [2 * imock + 3 for imock in range(nreal)]
+
+    # Initialize a list of windows to fill later
+    windows = [[None for j in range(len(observables))] for i in range(nreal)]
 
     # Given batch size, how many loops do we run?
     nsplits = (theory.size + batch_size - 1) // batch_size
@@ -137,14 +147,21 @@ def get_window_spikes(
         for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-            spectrum = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_survey=mock_survey, **mock_survey_kw).T
-            if windows[imock] is None:
-                windows[imock] = np.zeros((spectrum.shape[0], theory.size))
-            windows[imock][..., slice(*islice)] = spectrum
-        windows[imock] = WindowMatrix(value=windows[imock], theory=theory, observable=observable)
-        if (tmpdir is not None) and jax.process_index() == 0:
-            windows[imock].write(tmpdir / f"{seeds[imock]:010d}.h5")
-    window = WindowMatrix(value=np.mean([window.value() for window in windows], axis=0), theory=theory, observable=observable)
+            spectra = [
+                spectrum.T for spectrum in get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
+            ]
+            for idx_spectrum, spectrum in enumerate(spectra):
+                if windows[imock][idx_spectrum] is None:
+                    windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], theory.size))
+                windows[imock][idx_spectrum][..., slice(*islice)] = spectrum
+        for idx_window, window in enumerate(windows[imock]):
+            windows[imock][idx_window] = WindowMatrix(value=window, theory=theory, observable=observables[idx_window])
+            if (tmpdir is not None) and jax.process_index() == 0:
+                windows[imock][idx_window].write(tmpdir / survey_names[idx_window] / f"{seeds[imock]:010d}.h5")
+    window = [
+        WindowMatrix(value=np.mean([window[idx_survey].value() for window in windows], axis=0), theory=theory, observable=observables[idx_survey])
+        for idx_survey in range(len(observables))
+    ]
     return window, windows
 
 
