@@ -147,11 +147,13 @@ def get_window_spikes(
         for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-            spectra = get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
+            spectra = [
+                spectrum.T for spectrum in get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
+            ]
             for idx_spectrum, spectrum in enumerate(spectra):
                 if windows[imock][idx_spectrum] is None:
-                    windows[imock][idx_spectrum] = np.zeros((spectrum.shape[-1], theory.size))
-                windows[imock][idx_spectrum] = spectrum.T
+                    windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], theory.size))
+                windows[imock][idx_spectrum][..., slice(*islice)] = spectrum
         for idx_window, window in enumerate(windows[imock]):
             windows[imock][idx_window] = WindowMatrix(value=window, theory=theory, observable=observables[idx_window])
             if (tmpdir is not None) and jax.process_index() == 0:
