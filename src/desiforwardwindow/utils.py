@@ -2,7 +2,6 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass, make_dataclass
-from functools import partial
 from typing import Any
 
 import healpy as hp
