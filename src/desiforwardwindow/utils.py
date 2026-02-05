@@ -246,6 +246,7 @@ def _ang2pix(ra, dec):
 
 
 def select_region(ra, dec, region=None, sharding_mesh=None):
+    """Supported regions: ALL, GCcomb, NGC, SGC, N, S, SNGC, SSGC, DES, SnoDES, SSGCnoDES."""
     if (sharding_mesh is None) or sharding_mesh.empty:
         ang2pix = _ang2pix
     else:
