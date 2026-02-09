@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Literal
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from astropy.table import Table
 from jaxpower import MeshAttrs, ParticleField
@@ -225,3 +227,35 @@ def split_into_fields(
     data = ParticleField(positions[mask_is_data], weights=weights[mask_is_data], attrs=mattrs, exchange=exchange, backend=backend)
     randoms = ParticleField(positions[~mask_is_data], weights=weights[~mask_is_data], attrs=mattrs, exchange=exchange, backend=backend)
     return data, randoms, mask_is_data
+
+
+def mesh_union(mattrs1: MeshAttrs, mattrs2: MeshAttrs) -> tuple[jax.Array, jax.Array]:
+    """
+    Get the smallest axis-aligned cube that contains both input meshes.
+
+    Parameters
+    ----------
+    mattrs1 : MeshAttrs
+        First mesh attributes.
+    mattrs2 : MeshAttrs
+        Second mesh attributes.
+
+    Returns
+    -------
+    tuple[jax.Array, jax.Array]
+        Boxsize and boxcenter of the bounding cube for the input meshes.
+    """
+    c1 = mattrs1.boxcenter
+    c2 = mattrs2.boxcenter
+    boxcenter = (c1 + c2) / 2
+
+    l1 = mattrs1.boxsize
+    l2 = mattrs2.boxsize
+
+    panes1 = jnp.stack([c1 - l1 / 2, c1 + l1 / 2])
+    panes2 = jnp.stack([c2 - l2 / 2, c2 + l2 / 2])
+
+    all_panes = jnp.concatenate([panes1, panes2], axis=0)
+    boxsize = (jnp.max(all_panes, axis=0) - jnp.min(all_panes, axis=0)).max()
+
+    return boxsize, boxcenter
