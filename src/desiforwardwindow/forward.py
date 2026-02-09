@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from jaxpower import (
     BinMesh2SpectrumPoles,
     FKPField,
+    MeshAttrs,
     ParticleField,
     RealMeshField,
     compute_fkp2_shotnoise,
@@ -761,6 +762,11 @@ def apply_NAM(
     return nam_weights.sum(axis=range(nam_weights.ndim - 1)) + jnp.invert(randoms_regions.any(axis=0))  # sum over regions and add 1 where no region
 
 
+def _read_data_fkp(fkp_field: FKPField, mesh: RealMeshField, resampler: str = "cic", compensate: bool = True):
+    data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler=resampler, compensate=compensate)))
+    return fkp_field.clone(data=data)
+
+
 def _read_data(fkp_field: FKPField, theory: ObservableTree, seed: jax.Array, los: Literal["local", "x", "y", "z"], unitary_amplitude: bool):
     mattrs = fkp_field.attrs
     mesh = generate_anisotropic_gaussian_mesh(
@@ -770,9 +776,9 @@ def _read_data(fkp_field: FKPField, theory: ObservableTree, seed: jax.Array, los
         los=los,
         unitary_amplitude=unitary_amplitude,
     )
-    data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler="cic", compensate=True)))
+    fkp_field = _read_data_fkp(fkp_field, mesh)
     del mesh
-    return fkp_field.clone(data=data)
+    return fkp_field
 
 
 def _get_pk(fkp_field, fkp_norm, binner, los):
@@ -802,6 +808,8 @@ def mock_survey_catalog(
     # For region renormalization (need to be concatenated if multiple catalogs)
     data_regions: list[jnp.ndarray] | None = None,
     randoms_regions: list[jnp.ndarray] | None = None,
+    # Mesh generation
+    meshattrs: MeshAttrs | None = None,
 ) -> list[Mesh2SpectrumPoles]:
     """
     Get the power spectrum of a mock survey given an input theory, a seed and a set of observational effects.
@@ -832,6 +840,8 @@ def mock_survey_catalog(
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``data_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     randoms_regions : list[jnp.ndarray] | None, optional
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``randoms_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
+    meshattrs: MeshAttrs | None = None,
+        If not None, one mock mesh will be generated with these attributes instead of one mock mesh per FKP field with the FKP field's attributes. This mesh should cover all particles in all FKP fields. Default is None.
 
     Returns
     -------
@@ -850,8 +860,20 @@ def mock_survey_catalog(
     * Most of the time, it is preferable to apply RIC, AMR and NAM to the randoms; this is especially true when this function is used to generate window matrices.
     """
     sharding_mesh = get_sharding_mesh()
-    keys = jax.random.split(seed, len(fkp_fields))
-    fkp_fields = [_read_data(fkp_field, theory, key, los, unitary_amplitude) for fkp_field, key in zip(fkp_fields, keys, strict=True)]
+    if meshattrs is None:
+        keys = jax.random.split(seed, len(fkp_fields))
+        fkp_fields = [_read_data(fkp_field, theory, key, los, unitary_amplitude) for fkp_field, key in zip(fkp_fields, keys, strict=True)]
+    else:
+        mesh = generate_anisotropic_gaussian_mesh(
+            meshattrs,
+            poles=theory,
+            seed=seed,
+            los=los,
+            unitary_amplitude=unitary_amplitude,
+        )
+        fkp_fields = [_read_data_fkp(fkp_field, mesh) for fkp_field in fkp_fields]
+        del mesh
+
     data_weights = local_concatenate([fkp_field.data.weights for fkp_field in fkp_fields], axis=0, sharding_mesh=sharding_mesh)
     randoms_weights = local_concatenate([fkp_field.randoms.weights for fkp_field in fkp_fields], axis=0, sharding_mesh=sharding_mesh)
     if ric_args is not None:
