@@ -78,6 +78,7 @@ def get_window_spikes(
     batch_size: int = 1,
     mock_survey_kw: dict | None = None,
     static_argnames: list[str] | None = None,
+    basis: list[Mesh2SpectrumPoles] | None = None,
     tmpdir: str | os.PathLike | None = None,
     survey_names: list[str] | None = None,
 ):
@@ -102,6 +103,8 @@ def get_window_spikes(
         Additional keyword arguments for the ``mock_survey`` function, aside from ``theory`` and ``seed``.
     static_argnames: list[str] | None, optional
         List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
+    basis: list[Mesh2SpectrumPoles] | None, optional
+        Optional list of basis of theory power spectra to inject instead of the canonical spikes. If not ``None``, should be a list of inputs similar to ``theory`` but different values. The window will have shape ``(theory.size, len(basis))``. Default is ``None``.
     tmpdir: str | os.PathLike | None
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
     survey_names: list[str] | None
@@ -140,20 +143,22 @@ def get_window_spikes(
     # Initialize a list of windows to fill later
     windows = [[None for j in range(len(observables))] for i in range(nreal)]
 
+    basis = basis or [theory_zeros.at[ii].set(1.0) for ii in range(theory.size)]
+
     # Given batch size, how many loops do we run?
-    nsplits = (theory.size + batch_size - 1) // batch_size
+    nsplits = (len(basis) + batch_size - 1) // batch_size
     for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
         for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
-            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
-            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
+            islice = isplit * len(basis) // nsplits, (isplit + 1) * len(basis) // nsplits
+            spikes = jnp.array(basis[islice[0] : islice[1]])
             spectra = [
                 spectrum.T
                 for spectrum in _get_windows_component(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
             ]
             for idx_spectrum, spectrum in enumerate(spectra):
                 if windows[imock][idx_spectrum] is None:
-                    windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], theory.size))
+                    windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], len(basis)))
                 windows[imock][idx_spectrum][..., slice(*islice)] = spectrum
         for idx_window, window in enumerate(windows[imock]):
             windows[imock][idx_window] = WindowMatrix(value=window, theory=theory, observable=observables[idx_window])
