@@ -160,10 +160,10 @@ def get_window_spikes(
                 if windows[imock][idx_spectrum] is None:
                     windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], len(basis)))
                 windows[imock][idx_spectrum][..., slice(*islice)] = spectrum
-        for idx_window, window in enumerate(windows[imock]):
-            windows[imock][idx_window] = WindowMatrix(value=window, theory=theory, observable=observables[idx_window])
+        for idx_obs, window_obs in enumerate(windows[imock]):
+            windows[imock][idx_obs] = WindowMatrix(value=window_obs, theory=theory, observable=observables[idx_obs])
             if (tmpdir is not None) and jax.process_index() == 0:
-                windows[imock][idx_window].write(tmpdir / survey_names[idx_window] / f"{seeds[imock]:010d}.h5")
+                windows[imock][idx_obs].write(tmpdir / survey_names[idx_obs] / f"{seeds[imock]:010d}.h5")
     window = [
         WindowMatrix(value=np.mean([window[idx_survey].value() for window in windows], axis=0), theory=theory, observable=observables[idx_survey])
         for idx_survey in range(len(observables))
