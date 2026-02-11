@@ -130,7 +130,7 @@ def get_window_spikes(
 
     theory_zeros = jnp.zeros_like(theory.value())
     # JIT the function retrieving the window component
-    get_window = jax.jit(
+    _get_windows_component = jax.jit(
         get_windows_component,
         static_argnames=static_argnames,
     )
@@ -148,7 +148,8 @@ def get_window_spikes(
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
             spectra = [
-                spectrum.T for spectrum in get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
+                spectrum.T
+                for spectrum in _get_windows_component(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
             ]
             for idx_spectrum, spectrum in enumerate(spectra):
                 if windows[imock][idx_spectrum] is None:
@@ -221,7 +222,7 @@ def get_windows_spikes(
     observable = observables[0].clone(value=0.0 * observables[0].value())
     theory_zeros = jnp.zeros_like(theory.value())
     # JIT the function retrieving the window component
-    get_windows = jax.jit(
+    _get_windows_components = jax.jit(
         get_windows_component,
         static_argnames=static_argnames,
     )
@@ -238,7 +239,9 @@ def get_windows_spikes(
         for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-            spectra = [wd.T for wd in get_windows(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_surveys, **mock_surveys_kw)]
+            spectra = [
+                wd.T for wd in _get_windows_components(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_surveys, **mock_surveys_kw)
+            ]
             for isurvey in range(nsurveys):
                 if windows[imock][isurvey] is None:
                     windows[imock][isurvey] = np.zeros((spectra[isurvey].shape[0], theory.size))
