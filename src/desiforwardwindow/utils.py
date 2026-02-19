@@ -345,6 +345,7 @@ def get_clustering_rdzw(
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
         individual_weight = catalog["WEIGHT"]
         bitwise_weights = []
+        fkp_weights = []
         if "bitwise" in weight_type:
             if kind == "data":
                 individual_weight = catalog["WEIGHT"] / catalog["WEIGHT_COMP"]
@@ -352,8 +353,8 @@ def get_clustering_rdzw(
             elif kind == "randoms" and ntmp is not None:
                 individual_weight = catalog["WEIGHT"] * apply_wntmp(catalog["NTILE"], ntmp)
         if "FKP" in weight_type.upper():
-            individual_weight *= catalog["WEIGHT_FKP"]
-        rdzw.append([catalog["RA"], catalog["DEC"], catalog["Z"], individual_weight] + bitwise_weights)
+            fkp_weights = [catalog["WEIGHT_FKP"]]
+        rdzw.append([catalog["RA"], catalog["DEC"], catalog["Z"], individual_weight] + fkp_weights + bitwise_weights)
     rdzw = [np.concatenate([arrays[i] for arrays in rdzw], axis=0) for i in range(len(rdzw[0]))]
     for i in range(4):
         rdzw[i] = rdzw[i].astype("f8")

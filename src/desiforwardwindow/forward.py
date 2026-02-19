@@ -807,7 +807,14 @@ def _get_pk(*fkp_fields, fkp_norm, binner, los):
 
 
 def _update_fkp(data_weights, randoms_weights, fkp_field):
-    return fkp_field.clone(data=fkp_field.data.clone(weights=data_weights), randoms=fkp_field.randoms.clone(weights=randoms_weights))
+    return fkp_field.clone(
+        data=fkp_field.data.clone(
+            weights=data_weights * getattr(fkp_field.data, "extra_weights", 1.0),
+        ),
+        randoms=fkp_field.randoms.clone(
+            weights=randoms_weights * getattr(fkp_field.randoms, "extra_weights", 1.0),
+        ),
+    )
 
 
 def mock_survey_catalog(
