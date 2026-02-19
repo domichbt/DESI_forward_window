@@ -912,6 +912,22 @@ def mock_survey_catalog(
             data_weights = data_weights * amr_weights
         else:
             randoms_weights = randoms_weights * amr_weights
+        # Need to re-enforce RIC after AMR. Corresponds to adding w_sys to randoms by joining on TARGETID_DATA in the DESI pipeline
+        if ric_args is not None:
+            ric_weights = apply_RIC(
+                data_weights=data_weights,
+                randoms_weights=randoms_weights,
+                data_regions=ric_args.data_regions,
+                randoms_regions=ric_args.randoms_regions,
+                data_distances_digitized=ric_args.data_distances_digitized,
+                randoms_distances_digitized=ric_args.randoms_distances_digitized,
+                n_bins=ric_args.n_bins,
+                apply_to=ric_args.apply_to,
+            )
+            if ric_args.apply_to == "data":
+                data_weights = data_weights * ric_weights
+            else:
+                randoms_weights = randoms_weights * ric_weights
 
     if nam_args is not None:
         nam_weights = apply_NAM(
