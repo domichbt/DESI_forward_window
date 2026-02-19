@@ -793,12 +793,14 @@ def _get_pk(fkp_field, fkp_norm, binner, los):
 
 
 def mock_survey_catalog(
+    # Catalogs
+    *fkp_fields: FKPField,
+    # Mock generation
     theory: ObservableTree,
     seed: jax.Array,
     los: Literal["local", "x", "y", "z"],
     unitary_amplitude: bool,
-    # Data catalog and effects
-    fkp_fields: list[FKPField],
+    # Effects
     ric_args: RIC_args | None,
     amr_args: AMR_args | None,
     nam_args: NAM_args | None,
@@ -816,6 +818,8 @@ def mock_survey_catalog(
 
     Parameters
     ----------
+    *fkp_fields : FKPField
+        FKP fields containing data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should also be randoms), but the FKP field serves to designate data and randoms amongst the original randoms. One field per desired output power spectrum. Example: NGC and SGC can be provided as two separate FKP fields, to get two output spectra.
     theory : ObservableTree
         Fiducial theoretical power spectrum for the mock survey.
     seed : jax.Array
@@ -824,8 +828,6 @@ def mock_survey_catalog(
         Line of sight definition for the mock generation.
     unitary_amplitude : bool
         Whether to use unitary amplitude for the mock survey mesh generation.
-    fkp_fields : list[FKPField]
-        FKP fields containing data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should also be randoms), but the FKP field serves to designate data and randoms amongst the original randoms. One field per desired output power spectrum.
     ric_args : RIC_args | None
         Fixed, precomputed arguments for RIC weights computation by :py:func:`desiforwardwindow.forward.apply_RIC`. Obtain with :py:func:`desiforwardwindow.forward.prepare_RIC`.
     amr_args : AMR_args | None

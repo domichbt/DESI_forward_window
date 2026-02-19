@@ -76,7 +76,9 @@ def get_window_spikes(
     nreal: int = 10,
     seeds: list[int] | None = None,
     batch_size: int = 1,
-    mock_survey_kw: dict | None = None,
+    mock_survey_args: tuple = (),
+    mock_survey_kwargs: dict | None = None,
+    static_argnums: int | tuple[int, ...] | None = None,
     static_argnames: list[str] | None = None,
     tmpdir: str | os.PathLike | None = None,
     survey_names: list[str] | None = None,
@@ -98,10 +100,14 @@ def get_window_spikes(
         Individual random integer seeds for the `nreal` realizations. If ``None``, defaults to ``2 * i + 3``.
     batch_size : int, optional
         How many spikes to run in parallel, by default 4.
-    mock_survey_kw : dict, optional
+    mock_survey_args : tuple, optional
+        Positional arguments for the ``mock_survey`` function.
+    mock_survey_kwargs : dict, optional
         Additional keyword arguments for the ``mock_survey`` function, aside from ``theory`` and ``seed``.
+    static_argnums: int | tuple[int, ...] | None, optional
+        List of argument indices in ``mock_survey_kwargs`` that should passed to ``static_argnums`` when JITting.
     static_argnames: list[str] | None, optional
-        List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
+        List of arguments in ``mock_survey_kwargs`` that should passed to ``static_argnames`` when JITting.
     tmpdir: str | os.PathLike | None
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
     survey_names: list[str] | None
@@ -116,14 +122,15 @@ def get_window_spikes(
     -----
     The individual realizations are returned as a list of length ``nreal``, each entry being a list of ``lsstypes.WindowMatrix`` of length equal to the number of output power spectra of ``mock_survey``.
     """
-    mock_survey_kw = mock_survey_kw or {}
+    mock_survey_args = mock_survey_args or ()
+    mock_survey_kwargs = mock_survey_kwargs or {}
     static_argnames = static_argnames or []
     static_argnames = [*static_argnames, "mock_surveys"]
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
 
     # Get some empty theory and observable to use their shapes when creating the window matrix
-    observables = mock_survey(theory, seed=jax.random.key(42), **mock_survey_kw)
+    observables = mock_survey(*mock_survey_args, theory=theory, seed=jax.random.key(42), **mock_survey_kwargs)
     observables = [observable.clone(value=0.0 * observable.value()) for observable in observables]
 
     survey_names = survey_names or [f"survey_{idx_survey:02d}" for idx_survey in range(len(observables))]
@@ -132,6 +139,7 @@ def get_window_spikes(
     # JIT the function retrieving the window component
     get_window = jax.jit(
         get_windows_component,
+        static_argnums=static_argnums,
         static_argnames=static_argnames,
     )
     if seeds is None:
@@ -148,7 +156,10 @@ def get_window_spikes(
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
             spectra = [
-                spectrum.T for spectrum in get_window(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kw)
+                spectrum.T
+                for spectrum in get_window(
+                    *mock_survey_args, fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kwargs
+                )
             ]
             for idx_spectrum, spectrum in enumerate(spectra):
                 if windows[imock][idx_spectrum] is None:
@@ -171,7 +182,9 @@ def get_windows_spikes(
     nreal: int = 10,
     seeds: list[int] | None = None,
     batch_size: int = 1,
-    mock_surveys_kw: dict | None = None,
+    mock_surveys_args: tuple | None = None,
+    mock_surveys_kwargs: dict | None = None,
+    static_argnums: int | tuple[int, ...] | None = None,
     static_argnames: list[str] | None = None,
     tmpdir: str | os.PathLike | None = None,
     survey_names: list[str] | None = None,
@@ -195,10 +208,14 @@ def get_windows_spikes(
         Individual random integer seeds for the `nreal` realizations. If ``None``, defaults to ``2 * i + 3``.
     batch_size : int, optional
         How many spikes to run in parallel, by default 4.
-    mock_surveys_kw : dict, optional
-        Additional keyword arguments for the ``mock_surveys`` function, aside from ``theory`` and ``seed``.
+    mock_surveys_args : tuple, optional
+        Positional arguments for the ``mock_surveys`` function.
+    mock_surveys_kwargs : dict, optional
+        Keyword arguments for the ``mock_surveys`` function, aside from ``theory`` and ``seed``.
+    static_argnums: int | tuple[int, ...] | None, optional
+        List of argument indices in ``mock_surveys_args`` that should passed to ``static_argnums`` when JITting.
     static_argnames: list[str] | None, optional
-        List of arguments in ``mock_survey_kw`` that should passed to ``static_argnames`` when JITting.
+        List of arguments in ``mock_surveys_kwargs`` that should passed to ``static_argnames`` when JITting.
     tmpdir: str | os.PathLike | None
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
     name_surveys: list[str] | None
@@ -209,20 +226,22 @@ def get_windows_spikes(
     tuple[list[lsstypes.WindowMatrix], list[list[lsstypes.WindowMatrix]]]
         The average window matrices over ``nreal`` realizations (for each set of observationnal effects) and the individual realizations (shape (nreal, nsurveys)).
     """
-    mock_surveys_kw = mock_surveys_kw or {}
+    mock_surveys_args = mock_surveys_args or ()
+    mock_surveys_kwargs = mock_surveys_kwargs or {}
     static_argnames = static_argnames or []
     static_argnames = [*static_argnames, "mock_surveys"]
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
 
     # Get some empty theory and observable to use their shapes when creating the window matrix
-    observables = mock_surveys(theory, seed=jax.random.key(42), **mock_surveys_kw)
+    observables = mock_surveys(*mock_surveys_args, theory=theory, seed=jax.random.key(42), **mock_surveys_kwargs)
     nsurveys = len(observables)
     observable = observables[0].clone(value=0.0 * observables[0].value())
     theory_zeros = jnp.zeros_like(theory.value())
     # JIT the function retrieving the window component
     get_windows = jax.jit(
         get_windows_component,
+        static_argnums=static_argnums,
         static_argnames=static_argnames,
     )
     if seeds is None:
@@ -238,7 +257,17 @@ def get_windows_spikes(
         for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
             islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
             spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-            spectra = [wd.T for wd in get_windows(fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_surveys, **mock_surveys_kw)]
+            spectra = [
+                wd.T
+                for wd in get_windows(
+                    *mock_surveys_args,
+                    fiducial_theory=theory,
+                    injected_theory=spikes,
+                    seed=seed,
+                    mock_surveys=mock_surveys,
+                    **mock_surveys_kwargs,
+                )
+            ]
             for isurvey in range(nsurveys):
                 if windows[imock][isurvey] is None:
                     windows[imock][isurvey] = np.zeros((spectra[isurvey].shape[0], theory.size))
@@ -255,13 +284,13 @@ def get_windows_spikes(
     return windows_avg, windows
 
 
-def get_windows_component(injected_theory, fiducial_theory, seed, mock_surveys, **mock_surveys_kw):
+def get_windows_component(*mock_surveys_args, injected_theory, fiducial_theory, seed, mock_surveys, **mock_surveys_kw):
     """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
 
     # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles
     def get_responses(input_value):
         # theory, observe -> global
-        responses = mock_surveys(theory=fiducial_theory.clone(value=input_value), seed=seed, **mock_surveys_kw)
+        responses = mock_surveys(*mock_surveys_args, theory=fiducial_theory.clone(value=input_value), seed=seed, **mock_surveys_kw)
         return [jnp.concatenate(response.value(concatenate=False)).real for response in responses]
 
     # Get the Jacobian of this, differentated wrt argument `input_value`, evaluated in fiducial_value, dot product with s
@@ -269,22 +298,5 @@ def get_windows_component(injected_theory, fiducial_theory, seed, mock_surveys, 
         # fiducial_value -> global
         return jax.jvp(get_responses, primals=(jnp.concatenate(fiducial_theory.value(concatenate=False)),), tangents=(s,))[1]
         # return get_responses(jnp.concatenate(fiducial_theory.value(concatenate=False)) * s)
-
-    return jax.vmap(derivative)(injected_theory)
-
-
-def get_window_component(injected_theory, fiducial_theory, seed, mock_survey, **mock_survey_kw):
-    """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
-
-    # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles
-    def get_response(input_value):
-        # theory, observe -> global
-        response = mock_survey(theory=fiducial_theory.clone(value=input_value), seed=seed, **mock_survey_kw)
-        return jnp.concatenate(response.value(concatenate=False)).real
-
-    # Get the Jacobian of this, differentated wrt argument `input_value`, evaluated in fiducial_value, dot product with s
-    def derivative(s):
-        # fiducial_value -> global
-        return jax.jvp(get_response, primals=(jnp.concatenate(fiducial_theory.value(concatenate=False)),), tangents=(s,))[1]
 
     return jax.vmap(derivative)(injected_theory)
