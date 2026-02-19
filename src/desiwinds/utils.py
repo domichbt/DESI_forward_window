@@ -73,7 +73,7 @@ def bincount_sorted(
 
     Notes
     -----
-    If a sharding mesh is provided, ``x`` need only be sorted locally on each shard. Such functionality is provided by e.g. :py:func:`desiforwardwindow.utils.local_sort`. This avoids unnecessary communication between devices.
+    If a sharding mesh is provided, ``x`` need only be sorted locally on each shard. Such functionality is provided by e.g. :py:func:`desiwinds.utils.local_sort`. This avoids unnecessary communication between devices.
     """
     if (sharding_mesh is None) or sharding_mesh.empty:
         if rearrange is not None:

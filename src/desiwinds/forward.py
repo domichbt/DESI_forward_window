@@ -854,11 +854,11 @@ def mock_survey_catalog(
     unitary_amplitude : bool
         Whether to use unitary amplitude for the mock survey mesh generation.
     ric_args : RIC_args | tuple[RIC_args, RIC_args] | None
-        Fixed, precomputed arguments for RIC weights computation by :py:func:`desiforwardwindow.forward.apply_RIC`. Obtain with :py:func:`desiforwardwindow.forward.prepare_RIC`. One per tracer for cross correlation.
+        Fixed, precomputed arguments for RIC weights computation by :py:func:`desiwinds.forward.apply_RIC`. Obtain with :py:func:`desiwinds.forward.prepare_RIC`. One per tracer for cross correlation.
     amr_args : AMR_args | tuple[AMR_args, AMR_args] | None
-        Fixed, precomputed arguments for AMR weights computation by :py:func:`desiforwardwindow.forward.apply_AMR`. Obtain with :py:func:`desiforwardwindow.forward.prepare_AMR`. One per tracer for cross correlation.
+        Fixed, precomputed arguments for AMR weights computation by :py:func:`desiwinds.forward.apply_AMR`. Obtain with :py:func:`desiwinds.forward.prepare_AMR`. One per tracer for cross correlation.
     nam_args : NAM_args | tuple[NAM_args, NAM_args] | None
-        Fixed, precomputed arguments for NAM weights computation by :py:func:`desiforwardwindow.forward.apply_NAM`. Obtain with :py:func:`desiforwardwindow.forward.prepare_NAM`. One per tracer for cross correlation.
+        Fixed, precomputed arguments for NAM weights computation by :py:func:`desiwinds.forward.apply_NAM`. Obtain with :py:func:`desiwinds.forward.prepare_NAM`. One per tracer for cross correlation.
     binner : BinMesh2SpectrumPoles
         Binning operator for the power spectrum estimation.
     fkp_norms : list[jax.Array]

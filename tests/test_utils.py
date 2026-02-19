@@ -1,11 +1,11 @@
-"""Unit tests for utility functions in :py:module:`desiforwardwindow.utils`."""
+"""Unit tests for utility functions in :py:module:`desiwinds.utils`."""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from desiforwardwindow.utils import bincount
+from desiwinds.utils import bincount
 
 
 class TestBincount:

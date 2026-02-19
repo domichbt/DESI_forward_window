@@ -1,5 +1,5 @@
 [project]
-name = "desiforwardwindow"
+name = "desiwinds"
 version = "0.0.1"
 dependencies = [
     "jax",
