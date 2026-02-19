@@ -951,7 +951,7 @@ def mock_survey_catalog(
     if randoms_regions is not None:
         global_alpha = data_weights.sum() / randoms_weights.sum()
         alphas = (data_weights * data_regions).sum(axis=-1) / (randoms_weights * randoms_regions).sum(axis=-1)
-        correction = randoms_regions * alphas[..., None] / global_alpha + jnp.invert(
+        correction = (randoms_regions * alphas[..., None] / global_alpha).sum(axis=0) + jnp.invert(
             randoms_regions.any(axis=0)
         )  # apply alpha/global_alpha inside regions, 1 outside
         randoms_weights = randoms_weights * correction
