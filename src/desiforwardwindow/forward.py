@@ -950,12 +950,10 @@ def mock_survey_catalog(
     # global randoms renormalization per region
     if randoms_regions is not None:
         global_alpha = data_weights.sum() / randoms_weights.sum()
-        correction = jnp.ones_like(randoms_weights)
-        for data_region, randoms_region in zip(data_regions, randoms_regions, strict=True):
-            alpha = jnp.where(data_region, data_weights, 0.0).sum() / jnp.where(randoms_region, randoms_weights, 0.0).sum()
-            # Multiply by one outside mask and alpha/global_alpha inside
-            correction *= jnp.where(randoms_region, alpha / global_alpha, 1.0)
-            # jnp.invert(randoms_region) * 1.0 + randoms_region * alpha / global_alpha
+        alphas = (data_weights * data_regions).sum(axis=-1) / (randoms_weights * randoms_regions).sum(axis=-1)
+        correction = randoms_regions * alphas[..., None] / global_alpha + jnp.invert(
+            randoms_regions.any(axis=0)
+        )  # apply alpha/global_alpha inside regions, 1 outside
         randoms_weights = randoms_weights * correction
 
     # Rebuild FKP fields
