@@ -885,6 +885,60 @@ def mock_survey_catalog(
         * NAM is not necessary but should be applied like AMR if needed.
         * The data to randoms renormalization is done to NGC and SGC together. Arguments ``data_regions`` and ``randoms_regions`` from ``ric_args`` are suitable.
     * Most of the time, it is preferable to apply RIC, AMR and NAM to the randoms; this is especially true when this function is used to generate window matrices.
+
+    Examples
+    --------
+    For one tracer (autocorrelation), with NGC and SGC as two separate FKP fields, and RIC and AMR applied to both:
+    >>> fw_jit = jax.jit(mock_survey_catalog, static_argnames=["los", "unitary_amplitude"])
+    >>> pk_sgc, pk_ngc = fw_jit(
+            fkp_sgc,
+            fkp_ngc,
+            theory=theory,
+            seed=jax.random.key(42),
+            los="local",
+            unitary_amplitude=True,
+            ric_args=ric_args,
+            amr_args=amr_args,
+            nam_args=None,
+            fkp_norms=fkp_norms,
+            binner=binner,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+        )
+
+    For two tracers (cross-correlation), with NGC and SGC as two separate FKP fields, and RIC and AMR applied to both:
+    >>> fw_jit = jax.jit(mock_survey_catalog, static_argnames=["los", "unitary_amplitude"])
+    >>> pk_sgc, pk_ngc = fw_jit(
+            (fkp_sgc_tracer1, fkp_sgc_tracer2),
+            (fkp_ngc_tracer1, fkp_ngc_tracer2),
+            theory=theory,
+            seed=jax.random.key(42),
+            los="local",
+            unitary_amplitude=True,
+            ric_args=(ric_args_tracer1, ric_args_tracer2),
+            amr_args=(amr_args_tracer1, amr_args_tracer2),
+            nam_args=None,
+            fkp_norms=fkp_norms,
+            binner=binner,
+            data_regions=tuple(ric_arg.data_regions for ric_arg in ric_args),
+            randoms_regions=tuple(ric_arg.randoms_regions for ric_arg in ric_args),
+        )
+
+    For one tracer and a single region, with RIC and NAM applied:
+    >>> fw_jit = jax.jit(mock_survey_catalog, static_argnames=["los", "unitary_amplitude"])
+    >>> pk = fw_jit(
+            theory=theory,
+            seed=jax.random.key(42),
+            los="local",
+            unitary_amplitude=True,
+            ric_args=ric_args,
+            amr_args=None,
+            nam_args=nam_args,
+            fkp_norms=fkp_norms,
+            binner=binner,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+        )
     """
     ric_args = () if ric_args is None else (ric_args if isinstance(ric_args, tuple) else (ric_args,))
     amr_args = () if amr_args is None else (amr_args if isinstance(amr_args, tuple) else (amr_args,))
