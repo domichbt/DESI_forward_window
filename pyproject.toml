@@ -3,11 +3,24 @@ name = "desiwinds"
 version = "0.0.1"
 dependencies = [
     "jax",
+    "numpy",
+    "healpy",
+    "tqdm",
     "lsstypes @ git+https://github.com/adematti/lsstypes",
     "jax-power @ git+https://github.com/adematti/jax-power",
+    "mockfactory @ git+https://github.com/cosmodesi/mockfactory",
 ]
 readme = "README.md"
 requires-python = ">=3.10"
+
+[project.optional-dependencies]
+convenience = [
+    "astropy",
+    "cosmoprimo @ git+https://github.com/cosmodesi/cosmoprimo",
+    "LSS @ git+https://github.com/desihub/LSS/",
+    "mpi4py",
+]
+testing = ["pytest"]
 
 [build-system]
 requires = ["setuptools"]
