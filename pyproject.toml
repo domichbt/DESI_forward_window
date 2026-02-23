@@ -16,6 +16,7 @@ requires-python = ">=3.10"
 [project.optional-dependencies]
 convenience = [
     "astropy",
+    "fitsio",
     "cosmoprimo @ git+https://github.com/cosmodesi/cosmoprimo",
     "LSS @ git+https://github.com/desihub/LSS/",
     "mpi4py",
