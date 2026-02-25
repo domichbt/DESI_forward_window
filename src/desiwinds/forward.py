@@ -773,13 +773,13 @@ def _get_pk(*fkp_fields, fkp_norm, binner, los):
     )
 
 
-def _update_fkp(data_weights, randoms_weights, fkp_field):
+def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
     return fkp_field.clone(
         data=fkp_field.data.clone(
-            weights=data_weights * getattr(fkp_field.data, "extra_weights", 1.0),
+            weights=data_weights * getattr(fkp_field.data, estimator_weights, 1.0),
         ),
         randoms=fkp_field.randoms.clone(
-            weights=randoms_weights * getattr(fkp_field.randoms, "extra_weights", 1.0),
+            weights=randoms_weights * getattr(fkp_field.randoms, estimator_weights, 1.0),
         ),
     )
 
@@ -799,6 +799,7 @@ def mock_survey_catalog(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norms: list[jax.Array],
+    estimator_weights: str | None,
     # For region renormalization (need to be concatenated if multiple catalogs)
     data_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
     randoms_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
@@ -830,6 +831,8 @@ def mock_survey_catalog(
         Binning operator for the power spectrum estimation.
     fkp_norms : list[jax.Array]
         Pre-computed power spectrum norms for the FKP fields ``fkp_fields``, disregarding any future changes in weights.
+    estimator_weights : str | None, optional
+        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time. For example, FKP or OQE weights should not be applied for RIC and AMR but should be added at the spectrum estimation time. Default is ``None`` (no extra weight).
     data_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``data_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     randoms_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
@@ -912,6 +915,7 @@ def mock_survey_catalog(
     nam_args = () if nam_args is None else (nam_args if isinstance(nam_args, tuple) else (nam_args,))
     data_regions = () if data_regions is None else (data_regions if isinstance(data_regions, tuple) else (data_regions,))
     randoms_regions = () if randoms_regions is None else (randoms_regions if isinstance(randoms_regions, tuple) else (randoms_regions,))
+    estimator_weights = estimator_weights or ""
 
     sharding_mesh = get_sharding_mesh()
     if meshattrs is None:
@@ -1060,7 +1064,7 @@ def mock_survey_catalog(
         )
     )
 
-    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields)
+    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, [estimator_weights] * len(data_weights))
     pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
     return pks
 
