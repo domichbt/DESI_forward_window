@@ -285,26 +285,23 @@ def prepare_AMR(
     -----
     The digitized templates are offset by (n_bins+2)*n_regions, so that the region can be inferred directly from the digitized value. Since we expect digitized values to span [0, ``n_bins``+1], the offset is ``n_bins``+2.
     """
-    data_redshifts = [_data.Z for _data in data]
-    randoms_redshifts = [_randoms.Z for _randoms in randoms]
-    template_values_data = [_data.template_values for _data in data]
-    template_values_randoms = [_randoms.template_values for _randoms in randoms]
+    sharding_mesh = get_sharding_mesh()
+
+    # Locally concatenate, preserving the sharding
+    data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    template_values_data = local_concatenate([d["template_values"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    template_values_randoms = local_concatenate([r["template_values"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
     # Need to work around fake particles
-    is_real = jnp.concatenate([(_randoms.weights != 0) for _randoms in randoms])
-    templates_lower_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0)[is_real], tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0)[is_real], 100 - tail / 2, axis=0, method="lower")
+    is_real = local_concatenate([(_randoms.weights != 0) for _randoms in randoms], axis=0, sharding_mesh=sharding_mesh)
+    templates_lower_tails = jnp.percentile(template_values_randoms[is_real], tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.percentile(template_values_randoms[is_real], 100 - tail / 2, axis=0, method="lower")
     del is_real
 
-    # Locally concatenate, preserving the sharding
-    sharding_mesh = get_sharding_mesh()
-    data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
-    randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate(data_redshifts, axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate(randoms_redshifts, axis=0, sharding_mesh=sharding_mesh)
-    template_values_data = local_concatenate(template_values_data, axis=0, sharding_mesh=sharding_mesh)
-    template_values_randoms = local_concatenate(template_values_randoms, axis=0, sharding_mesh=sharding_mesh)
     # Now proceed as usual
 
     # Select the regions
@@ -582,8 +579,8 @@ def prepare_NAM(
     sharding_mesh = get_sharding_mesh()
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
     randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate([d.Z for d in data], axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate([r.Z for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     def _vec2pix(positions):
         import healpy as hp
@@ -1064,7 +1061,7 @@ def mock_survey_catalog(
         )
     )
 
-    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, [estimator_weights] * len(data_weights))
+    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, jax.tree.map(lambda _: estimator_weights, data_weights))
     pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
     return pks
 
