@@ -548,8 +548,6 @@ NAM_args = make_jax_dataclass(
 def prepare_NAM(
     data: list[ParticleField],
     randoms: list[ParticleField],
-    data_redshifts: list[jax.Array],
-    randoms_redshifts: list[jax.Array],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     # NAM specific parameters
     nside: int,
@@ -561,13 +559,9 @@ def prepare_NAM(
     Parameters
     ----------
     data : list[ParticleField]
-        Fields containing positions and weights of the data particles.
+        Fields containing positions and weights of the data particles. Must have extra field ``"Z"`` (redshift) available.
     randoms : list[ParticleField]
-        Fields containing positions and weights of the randoms particles.
-    data_redshifts: list[jax.Array]
-        Data redshifts for all catalogs.
-    randoms_redshifts: list[jax.Array]
-        Randoms redshifts for all catalogs.
+        Fields containing positions and weights of the randoms particles. Must have extra field ``"Z"`` (redshift) available.
     regions_zranges: list[tuple[str, tuple[float, float]]]
         Regions and redshift ranges to split data in.
     nside : int
@@ -584,18 +578,12 @@ def prepare_NAM(
     -----
     Healpix manipulation is always done in ``RING`` scheme.
     """
-    # Shard the extra metadata similarly to data/randoms if necessary
-    for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
-        if ddata.exchange_direct is not None:
-            data_redshifts[i] = ddata.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
-        if rrandoms.exchange_direct is not None:
-            randoms_redshifts[i] = rrandoms.exchange_direct(make_array_from_process_local_data(rredshifts, pad=0.0), pad=0.0)
     # Locally concatenate, preserving the sharding
     sharding_mesh = get_sharding_mesh()
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
     randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate(data_redshifts, axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate(randoms_redshifts, axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d.Z for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r.Z for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     def _vec2pix(positions):
         import healpy as hp
