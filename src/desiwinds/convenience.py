@@ -8,10 +8,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from astropy.table import Table
-from jaxpower import MeshAttrs
+from jaxpower import MeshAttrs, ParticleField
 from jaxpower.types import ObservableLeaf, ObservableTree
 
-from .extended_particle_field import ExtendedParticleField
 from .utils import get_clustering_positions_weights
 
 
@@ -191,13 +190,13 @@ def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | 
 def split_into_fields(
     positions: np.ndarray,
     weights: np.ndarray,
-    extra_weights: np.ndarray | None,
+    extra: dict[str, np.ndarray] | None,
     data_size: int,
     split_seed: int,
     mattrs: MeshAttrs,
     backend: Literal["jax", "mpi"] = "jax",
     exchange: bool = True,
-) -> tuple[ExtendedParticleField, ExtendedParticleField, np.ndarray]:
+) -> tuple[ParticleField, ParticleField, np.ndarray]:
     """
     Split particles into two particle fields.
 
@@ -207,8 +206,8 @@ def split_into_fields(
         Particle positions.
     weights : np.ndarray
         Particle weights.
-    extra_weights : np.ndarray | None
-        Particle extra weights, if any.
+    extra : dict[str, np.ndarray] | None
+        Particle extra attributes, if any: redshift, template values, FKP weights...
     data_size : int
         Number of particles to use as "data".
     split_seed : int
@@ -227,23 +226,24 @@ def split_into_fields(
 
     Notes
     -----
-    Extra weights are weights applied at P(k) computation time only, but don't contribute to the observational effects. For example, FKP and OQE weights are extra weights, while completeness weights are not.
+    Arrays in ``extra`` will be sharded/distributed like `positions` and `weights`, and are available as regular attirbutes of the :class:`jaxpower.ParticleField` instance. See :class:`jaxpower.ParticleField` for more details.
     """
+    extra = extra or {}
     rng = np.random.default_rng(seed=split_seed)
     randoms_size = weights.size - data_size
     mask_is_data = rng.uniform(size=(randoms_size + data_size)) < (data_size / (data_size + randoms_size))
-    data = ExtendedParticleField(
+    data = ParticleField(
         positions[mask_is_data],
         weights=weights[mask_is_data],
-        extra_weights=extra_weights[mask_is_data] if extra_weights is not None else None,
+        extra={k: v[mask_is_data] for k, v in extra.items()},
         attrs=mattrs,
         exchange=exchange,
         backend=backend,
     )
-    randoms = ExtendedParticleField(
+    randoms = ParticleField(
         positions[~mask_is_data],
         weights=weights[~mask_is_data],
-        extra_weights=extra_weights[~mask_is_data] if extra_weights is not None else None,
+        extra={k: v[~mask_is_data] for k, v in extra.items()},
         attrs=mattrs,
         exchange=exchange,
         backend=backend,
