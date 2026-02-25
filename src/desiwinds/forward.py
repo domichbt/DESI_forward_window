@@ -253,13 +253,8 @@ AMR_args = make_jax_dataclass(
 def prepare_AMR(
     data: list[ParticleField],
     randoms: list[ParticleField],
-    data_redshifts: list[jax.Array],
-    randoms_redshifts: list[jax.Array],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     apply_to: Literal["data", "randoms"],
-    # AMR specific data
-    template_values_data: jax.Array | list[jax.Array],
-    template_values_randoms: jax.Array | list[jax.Array],
     # AMR specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
@@ -271,17 +266,9 @@ def prepare_AMR(
     Parameters
     ----------
     data : list[ParticleField]
-        Fields containing positions and weights of the data particles.
+        Fields containing positions and weights of the data particles. Must have extra fields ``"Z"`` and ``"template_values"`` available.
     randoms : list[ParticleField]
-        Fields containing positions and weights of the randoms particles.
-    data_redshifts: list[jax.Array]
-        Data redshifts for all catalogs.
-    randoms_redshifts: list[jax.Array]
-        Randoms redshifts for all catalogs.
-    template_values_data : jnp.ndarray
-        Values of the templates for the data.
-    template_values_randoms : jnp.ndarray
-        Values of the templates for the randoms.
+        Fields containing positions and weights of the randoms particles. Must have extra fields ``"Z"`` and ``"template_values"`` available.
     tail : float, optional
         Percentile of the (random's) template value distribution to remove, by default 0.5
     bin_margin : float, optional
@@ -298,25 +285,17 @@ def prepare_AMR(
     -----
     The digitized templates are offset by (n_bins+2)*n_regions, so that the region can be inferred directly from the digitized value. Since we expect digitized values to span [0, ``n_bins``+1], the offset is ``n_bins``+2.
     """
-    # Before any sharding or exchange, compute the 0.5th and 99.5th percentiles of the templates in the randoms
-    # This will avoid any problems with padding particles originating from exchange
-    templates_lower_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0), tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0), 100 - tail / 2, axis=0, method="lower")
+    data_redshifts = [_data.Z for _data in data]
+    randoms_redshifts = [_randoms.Z for _randoms in randoms]
+    template_values_data = [_data.template_values for _data in data]
+    template_values_randoms = [_randoms.template_values for _randoms in randoms]
 
-    # Shard the extra metadata similarly to data/randoms if necessary
-    for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
-        if ddata.exchange_direct is not None:
-            template_values_data[i] = ddata.exchange_direct(make_array_from_process_local_data(template_values_data[i], pad="mean"), pad=0.0)
-            data_redshifts[i] = ddata.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
-        else:
-            template_values_data[i] = jnp.array(template_values_data[i])
-            data_redshifts[i] = jnp.array(dredshifts)
-        if rrandoms.exchange_direct is not None:
-            template_values_randoms[i] = rrandoms.exchange_direct(make_array_from_process_local_data(template_values_randoms[i], pad="mean"), pad=0.0)
-            randoms_redshifts[i] = rrandoms.exchange_direct(make_array_from_process_local_data(rredshifts, pad=0.0), pad=0.0)
-        else:
-            template_values_randoms[i] = jnp.array(template_values_randoms[i])
-            randoms_redshifts[i] = jnp.array(rredshifts)
+    # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
+    # Need to work around fake particles
+    is_real = jnp.concatenate([(_randoms.weights != 0) for _randoms in randoms])
+    templates_lower_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0)[is_real], tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0)[is_real], 100 - tail / 2, axis=0, method="lower")
+    del is_real
 
     # Locally concatenate, preserving the sharding
     sharding_mesh = get_sharding_mesh()
