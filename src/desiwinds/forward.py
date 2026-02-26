@@ -253,13 +253,8 @@ AMR_args = make_jax_dataclass(
 def prepare_AMR(
     data: list[ParticleField],
     randoms: list[ParticleField],
-    data_redshifts: list[jax.Array],
-    randoms_redshifts: list[jax.Array],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     apply_to: Literal["data", "randoms"],
-    # AMR specific data
-    template_values_data: jax.Array | list[jax.Array],
-    template_values_randoms: jax.Array | list[jax.Array],
     # AMR specific parameters
     tail: float = 0.5,
     bin_margin: float = 1e-7,
@@ -271,17 +266,9 @@ def prepare_AMR(
     Parameters
     ----------
     data : list[ParticleField]
-        Fields containing positions and weights of the data particles.
+        Fields containing positions and weights of the data particles. Must have extra fields ``"Z"`` and ``"template_values"`` available.
     randoms : list[ParticleField]
-        Fields containing positions and weights of the randoms particles.
-    data_redshifts: list[jax.Array]
-        Data redshifts for all catalogs.
-    randoms_redshifts: list[jax.Array]
-        Randoms redshifts for all catalogs.
-    template_values_data : jnp.ndarray
-        Values of the templates for the data.
-    template_values_randoms : jnp.ndarray
-        Values of the templates for the randoms.
+        Fields containing positions and weights of the randoms particles. Must have extra fields ``"Z"`` and ``"template_values"`` available.
     tail : float, optional
         Percentile of the (random's) template value distribution to remove, by default 0.5
     bin_margin : float, optional
@@ -298,34 +285,23 @@ def prepare_AMR(
     -----
     The digitized templates are offset by (n_bins+2)*n_regions, so that the region can be inferred directly from the digitized value. Since we expect digitized values to span [0, ``n_bins``+1], the offset is ``n_bins``+2.
     """
-    # Before any sharding or exchange, compute the 0.5th and 99.5th percentiles of the templates in the randoms
-    # This will avoid any problems with padding particles originating from exchange
-    templates_lower_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0), tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.percentile(jnp.concatenate(template_values_randoms, axis=0), 100 - tail / 2, axis=0, method="lower")
-
-    # Shard the extra metadata similarly to data/randoms if necessary
-    for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
-        if ddata.exchange_direct is not None:
-            template_values_data[i] = ddata.exchange_direct(make_array_from_process_local_data(template_values_data[i], pad="mean"), pad=0.0)
-            data_redshifts[i] = ddata.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
-        else:
-            template_values_data[i] = jnp.array(template_values_data[i])
-            data_redshifts[i] = jnp.array(dredshifts)
-        if rrandoms.exchange_direct is not None:
-            template_values_randoms[i] = rrandoms.exchange_direct(make_array_from_process_local_data(template_values_randoms[i], pad="mean"), pad=0.0)
-            randoms_redshifts[i] = rrandoms.exchange_direct(make_array_from_process_local_data(rredshifts, pad=0.0), pad=0.0)
-        else:
-            template_values_randoms[i] = jnp.array(template_values_randoms[i])
-            randoms_redshifts[i] = jnp.array(rredshifts)
+    sharding_mesh = get_sharding_mesh()
 
     # Locally concatenate, preserving the sharding
-    sharding_mesh = get_sharding_mesh()
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
     randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate(data_redshifts, axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate(randoms_redshifts, axis=0, sharding_mesh=sharding_mesh)
-    template_values_data = local_concatenate(template_values_data, axis=0, sharding_mesh=sharding_mesh)
-    template_values_randoms = local_concatenate(template_values_randoms, axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d.extra["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r.extra["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    template_values_data = local_concatenate([d.extra["template_values"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    template_values_randoms = local_concatenate([r.extra["template_values"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+
+    # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
+    # Need to work around fake particles
+    is_real = local_concatenate([(_randoms.weights != 0) for _randoms in randoms], axis=0, sharding_mesh=sharding_mesh)
+    templates_lower_tails = jnp.percentile(template_values_randoms[is_real], tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.percentile(template_values_randoms[is_real], 100 - tail / 2, axis=0, method="lower")
+    del is_real
+
     # Now proceed as usual
 
     # Select the regions
@@ -569,8 +545,6 @@ NAM_args = make_jax_dataclass(
 def prepare_NAM(
     data: list[ParticleField],
     randoms: list[ParticleField],
-    data_redshifts: list[jax.Array],
-    randoms_redshifts: list[jax.Array],
     regions_zranges: list[tuple[str, tuple[float, float]]],
     # NAM specific parameters
     nside: int,
@@ -582,13 +556,9 @@ def prepare_NAM(
     Parameters
     ----------
     data : list[ParticleField]
-        Fields containing positions and weights of the data particles.
+        Fields containing positions and weights of the data particles. Must have extra field ``"Z"`` (redshift) available.
     randoms : list[ParticleField]
-        Fields containing positions and weights of the randoms particles.
-    data_redshifts: list[jax.Array]
-        Data redshifts for all catalogs.
-    randoms_redshifts: list[jax.Array]
-        Randoms redshifts for all catalogs.
+        Fields containing positions and weights of the randoms particles. Must have extra field ``"Z"`` (redshift) available.
     regions_zranges: list[tuple[str, tuple[float, float]]]
         Regions and redshift ranges to split data in.
     nside : int
@@ -605,18 +575,12 @@ def prepare_NAM(
     -----
     Healpix manipulation is always done in ``RING`` scheme.
     """
-    # Shard the extra metadata similarly to data/randoms if necessary
-    for i, (ddata, rrandoms, dredshifts, rredshifts) in enumerate(zip(data, randoms, data_redshifts, randoms_redshifts, strict=True)):
-        if ddata.exchange_direct is not None:
-            data_redshifts[i] = ddata.exchange_direct(make_array_from_process_local_data(dredshifts, pad=0.0), pad=0.0)
-        if rrandoms.exchange_direct is not None:
-            randoms_redshifts[i] = rrandoms.exchange_direct(make_array_from_process_local_data(rredshifts, pad=0.0), pad=0.0)
     # Locally concatenate, preserving the sharding
     sharding_mesh = get_sharding_mesh()
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
     randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate(data_redshifts, axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate(randoms_redshifts, axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d.extra["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r.extra["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     def _vec2pix(positions):
         import healpy as hp
@@ -806,13 +770,13 @@ def _get_pk(*fkp_fields, fkp_norm, binner, los):
     )
 
 
-def _update_fkp(data_weights, randoms_weights, fkp_field):
+def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
     return fkp_field.clone(
         data=fkp_field.data.clone(
-            weights=data_weights * getattr(fkp_field.data, "extra_weights", 1.0),
+            weights=data_weights * getattr(fkp_field.data, estimator_weights, 1.0),
         ),
         randoms=fkp_field.randoms.clone(
-            weights=randoms_weights * getattr(fkp_field.randoms, "extra_weights", 1.0),
+            weights=randoms_weights * getattr(fkp_field.randoms, estimator_weights, 1.0),
         ),
     )
 
@@ -832,6 +796,7 @@ def mock_survey_catalog(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norms: list[jax.Array],
+    estimator_weights: str | None,
     # For region renormalization (need to be concatenated if multiple catalogs)
     data_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
     randoms_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
@@ -863,6 +828,8 @@ def mock_survey_catalog(
         Binning operator for the power spectrum estimation.
     fkp_norms : list[jax.Array]
         Pre-computed power spectrum norms for the FKP fields ``fkp_fields``, disregarding any future changes in weights.
+    estimator_weights : str | None, optional
+        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time. For example, FKP or OQE weights should not be applied for RIC and AMR but should be added at the spectrum estimation time. Default is ``None`` (no extra weight).
     data_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``data_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     randoms_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
@@ -945,6 +912,7 @@ def mock_survey_catalog(
     nam_args = () if nam_args is None else (nam_args if isinstance(nam_args, tuple) else (nam_args,))
     data_regions = () if data_regions is None else (data_regions if isinstance(data_regions, tuple) else (data_regions,))
     randoms_regions = () if randoms_regions is None else (randoms_regions if isinstance(randoms_regions, tuple) else (randoms_regions,))
+    estimator_weights = estimator_weights or ""
 
     sharding_mesh = get_sharding_mesh()
     if meshattrs is None:
@@ -1093,7 +1061,7 @@ def mock_survey_catalog(
         )
     )
 
-    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields)
+    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, jax.tree.map(lambda _: estimator_weights, data_weights))
     pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
     return pks
 
