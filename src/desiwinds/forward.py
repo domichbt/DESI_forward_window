@@ -290,10 +290,10 @@ def prepare_AMR(
     # Locally concatenate, preserving the sharding
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
     randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate([d["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate([r["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    template_values_data = local_concatenate([d["template_values"] for d in data], axis=0, sharding_mesh=sharding_mesh)
-    template_values_randoms = local_concatenate([r["template_values"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d.extra["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r.extra["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    template_values_data = local_concatenate([d.extra["template_values"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    template_values_randoms = local_concatenate([r.extra["template_values"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
     # Need to work around fake particles
@@ -579,8 +579,8 @@ def prepare_NAM(
     sharding_mesh = get_sharding_mesh()
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
     randoms_positions = local_concatenate([r.positions for r in randoms], axis=0, sharding_mesh=sharding_mesh)
-    data_redshifts = local_concatenate([d["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
-    randoms_redshifts = local_concatenate([r["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
+    data_redshifts = local_concatenate([d.extra["Z"] for d in data], axis=0, sharding_mesh=sharding_mesh)
+    randoms_redshifts = local_concatenate([r.extra["Z"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     def _vec2pix(positions):
         import healpy as hp
