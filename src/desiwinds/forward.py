@@ -780,6 +780,20 @@ def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
         ),
     )
 
+def _fill_with_constant(tree, constant):
+    """
+    Copy the pytree structure of tree but replace every subtree with same structure as constant with constant.
+
+    Example
+    -------
+    >>> foo = [(1, 3), (4, 5), (7, 8)]
+    >>> _fill_with_constant(foo, "a")
+    [("a", "a"), ("a", "a"), ("a", "a")]
+    >>> _fill_with_constant(foo, ("a", "b"))
+    [("a", "b"), ("a", "b"), ("a", "b")]
+    """
+    return jax.tree.map(lambda _: constant, tree, is_leaf=lambda x: jax.tree_util.tree_structure(x) == jax.tree_util.tree_structure(constant))
+
 
 def mock_survey_catalog(
     # Catalogs
@@ -796,7 +810,7 @@ def mock_survey_catalog(
     # Final P(k) estimation
     binner: BinMesh2SpectrumPoles,
     fkp_norms: list[jax.Array],
-    estimator_weights: str | None,
+    estimator_weights: str | tuple[str, str] | None,
     # For region renormalization (need to be concatenated if multiple catalogs)
     data_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
     randoms_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
@@ -828,8 +842,8 @@ def mock_survey_catalog(
         Binning operator for the power spectrum estimation.
     fkp_norms : list[jax.Array]
         Pre-computed power spectrum norms for the FKP fields ``fkp_fields``, disregarding any future changes in weights.
-    estimator_weights : str | None, optional
-        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time. For example, FKP or OQE weights should not be applied for RIC and AMR but should be added at the spectrum estimation time. Default is ``None`` (no extra weight).
+    estimator_weights : str | tuple[str, str] | None, optional
+        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time. For example, FKP or OQE weights should not be applied for RIC and AMR but should be added at the spectrum estimation time. Default is ``None`` (no extra weight). Can pass a pair of strings for cross correlation.
     data_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``data_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     randoms_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
@@ -1061,7 +1075,7 @@ def mock_survey_catalog(
         )
     )
 
-    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, jax.tree.map(lambda _: estimator_weights, data_weights))
+    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
     pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
     return pks
 
