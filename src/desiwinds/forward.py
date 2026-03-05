@@ -298,8 +298,8 @@ def prepare_AMR(
     # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
     # Need to work around fake particles
     is_real = local_concatenate([(_randoms.weights != 0) for _randoms in randoms], axis=0, sharding_mesh=sharding_mesh)
-    templates_lower_tails = jnp.percentile(template_values_randoms[is_real], tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.percentile(template_values_randoms[is_real], 100 - tail / 2, axis=0, method="lower")
+    templates_lower_tails = jnp.nanpercentile(jnp.where(is_real[:, None], template_values_randoms, jnp.nan), tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.nanpercentile(jnp.where(is_real[:, None], template_values_randoms, jnp.nan), 100 - tail / 2, axis=0, method="lower")
     del is_real
 
     # Now proceed as usual
