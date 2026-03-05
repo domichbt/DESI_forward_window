@@ -771,14 +771,20 @@ def _get_pk(*fkp_fields, fkp_norm, binner, los):
 
 
 def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
-    return fkp_field.clone(
-        data=fkp_field.data.clone(
-            weights=data_weights * getattr(fkp_field.data, estimator_weights, 1.0),
-        ),
-        randoms=fkp_field.randoms.clone(
-            weights=randoms_weights * getattr(fkp_field.randoms, estimator_weights, 1.0),
-        ),
-    )
+    if estimator_weights:
+        return fkp_field.clone(
+            data=fkp_field.data.clone(
+                weights=data_weights * fkp_field.data.extra[estimator_weights],
+            ),
+            randoms=fkp_field.randoms.clone(
+                weights=randoms_weights * fkp_field.randoms.extra[estimator_weights],
+            ),
+        )
+    else:
+        return fkp_field.clone(
+            data=fkp_field.data.clone(weights=data_weights),
+            randoms=fkp_field.randoms.clone(weights=randoms_weights),
+        )
 
 def _fill_with_constant(tree, constant):
     """
@@ -926,7 +932,6 @@ def mock_survey_catalog(
     nam_args = () if nam_args is None else (nam_args if isinstance(nam_args, tuple) else (nam_args,))
     data_regions = () if data_regions is None else (data_regions if isinstance(data_regions, tuple) else (data_regions,))
     randoms_regions = () if randoms_regions is None else (randoms_regions if isinstance(randoms_regions, tuple) else (randoms_regions,))
-    estimator_weights = estimator_weights or ""
 
     sharding_mesh = get_sharding_mesh()
     if meshattrs is None:
