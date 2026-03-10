@@ -1,3 +1,7 @@
+"""``desiwinds`` is a Python package performing window matrix computations for DESI power spectrum measurements.
+
+It works by sampling forward modeled DESI-like surveys on gaussian mocks realizations. Designed to run on GPU and take into account survey geometry, radial integral constraints, angular mode removal from imaging sytematics regressions and angular integral constraint (nulles angular modes).
+"""
 from . import forward, window
 
 try:

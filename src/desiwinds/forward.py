@@ -16,7 +16,7 @@ from jaxpower import (
     compute_mesh2_spectrum,
     generate_anisotropic_gaussian_mesh,
 )
-from jaxpower.mesh import get_sharding_mesh, make_array_from_process_local_data
+from jaxpower.mesh import get_sharding_mesh
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
 from .utils import bincount, bincount_sorted, local_argsort, local_concatenate, local_split, make_jax_dataclass, select_region
