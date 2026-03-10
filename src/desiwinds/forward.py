@@ -303,10 +303,9 @@ def prepare_AMR(
 
     # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
     # Need to work around fake particles
-    is_real = local_concatenate([(_randoms.weights != 0) for _randoms in randoms], axis=0, sharding_mesh=sharding_mesh)
-    templates_lower_tails = jnp.nanpercentile(jnp.where(is_real[:, None], template_values_randoms, jnp.nan), tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.nanpercentile(jnp.where(is_real[:, None], template_values_randoms, jnp.nan), 100 - tail / 2, axis=0, method="lower")
-    del is_real
+    randoms_is_real = local_concatenate([(_randoms.weights != 0) for _randoms in randoms], axis=0, sharding_mesh=sharding_mesh)
+    templates_lower_tails = jnp.nanpercentile(jnp.where(randoms_is_real[:, None], template_values_randoms, jnp.nan), tail / 2, axis=0, method="higher")
+    templates_upper_tails = jnp.nanpercentile(jnp.where(randoms_is_real[:, None], template_values_randoms, jnp.nan), 100 - tail / 2, axis=0, method="lower")
 
     # Now proceed as usual
 
@@ -384,14 +383,20 @@ def prepare_AMR(
     data_coverage = data_regions.sum(axis=0)
     randoms_coverage = randoms_regions.sum(axis=0)
 
+    data_is_fake = local_concatenate([_data.weights == 0 for _data in data], axis=0, sharding_mesh=sharding_mesh).astype(int)
+    randoms_is_fake = jnp.invert(randoms_is_real).astype(int)
+
+    real_data_no_region = (data_coverage + data_is_fake) < 1
+    real_random_no_region = (randoms_coverage + randoms_is_fake) < 1
+
     if (data_coverage >= 2).any():
         warn(f"Some ({(data_coverage >= 2).sum()}/{data_coverage.size}) data particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage >= 2).any():
         warn(f"Some ({(randoms_coverage >= 2).sum()}/{randoms_coverage.size}) randoms particles are in several regions at once.", RuntimeWarning, stacklevel=2)
-    if (data_coverage < 1).any():
-        warn(f"Some ({(data_coverage == 0).sum()}/{data_coverage.size}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
-    if (randoms_coverage < 1).any():
-        warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
+    if real_data_no_region.any():
+        warn(f"Some ({real_data_no_region.sum()}/{(1 - data_is_fake).sum()}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
+    if real_random_no_region.any():
+        warn(f"Some ({(randoms_coverage == 0).sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     data_isort = local_argsort(data_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
     randoms_isort = local_argsort(randoms_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
@@ -641,14 +646,20 @@ def prepare_NAM(
     data_coverage = data_regions.sum(axis=0)
     randoms_coverage = randoms_regions.sum(axis=0)
 
+    data_is_fake = local_concatenate([d.weights == 0.0 for d in data], axis=0, sharding_mesh=sharding_mesh).astype(int)
+    randoms_is_fake = local_concatenate([r.weights == 0.0 for r in randoms], axis=0, sharding_mesh=sharding_mesh).astype(int)
+
+    real_data_no_region = (data_coverage + data_is_fake) < 1
+    real_random_no_region = (randoms_coverage + randoms_is_fake) < 1
+
     if (data_coverage >= 2).any():
         warn(f"Some ({(data_coverage >= 2).sum()}/{data_coverage.size}) data particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage >= 2).any():
         warn(f"Some ({(randoms_coverage >= 2).sum()}/{randoms_coverage.size}) randoms particles are in several regions at once.", RuntimeWarning, stacklevel=2)
-    if (data_coverage < 1).any():
-        warn(f"Some ({(data_coverage == 0).sum()}/{data_coverage.size}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
-    if (randoms_coverage < 1).any():
-        warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
+    if (real_data_no_region).any():
+        warn(f"Some ({(real_data_no_region).sum()}/{(1 - data_is_fake).sum()}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
+    if (real_random_no_region).any():
+        warn(f"Some ({(real_random_no_region).sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     return NAM_args(
         data_pixels=data_pixels,
