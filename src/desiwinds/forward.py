@@ -126,14 +126,20 @@ def prepare_RIC(
     data_coverage = data_regions.sum(axis=0)
     randoms_coverage = randoms_regions.sum(axis=0)
 
+    data_is_fake = local_concatenate([d.weights == 0.0 for d in data], axis=0, sharding_mesh=sharding_mesh).astype(int)
+    randoms_is_fake = local_concatenate([r.weights == 0.0 for r in randoms], axis=0, sharding_mesh=sharding_mesh).astype(int)
+
+    real_data_no_region = (data_coverage + data_is_fake) < 1
+    real_random_no_region = (randoms_coverage + randoms_is_fake) < 1
+
     if (data_coverage >= 2).any():
         warn(f"Some ({(data_coverage >= 2).sum()}/{data_coverage.size}) data particles are in several regions at once.", RuntimeWarning, stacklevel=2)
     if (randoms_coverage >= 2).any():
         warn(f"Some ({(randoms_coverage >= 2).sum()}/{randoms_coverage.size}) randoms particles are in several regions at once.", RuntimeWarning, stacklevel=2)
-    if (data_coverage < 1).any():
-        warn(f"Some ({(data_coverage == 0).sum()}/{data_coverage.size}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
-    if (randoms_coverage < 1).any():
-        warn(f"Some ({(randoms_coverage == 0).sum()}/{randoms_coverage.size}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
+    if (real_data_no_region).any():
+        warn(f"Some ({(real_data_no_region).sum()}/{(1 - data_is_fake).sum()}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
+    if (real_random_no_region).any():
+        warn(f"Some ({(real_random_no_region).sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     return RIC_args(
         data_distances_digitized=data_distances_digitized,
