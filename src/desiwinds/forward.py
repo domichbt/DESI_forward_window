@@ -803,6 +803,7 @@ def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
             randoms=fkp_field.randoms.clone(weights=randoms_weights),
         )
 
+
 def _fill_with_constant(tree, constant):
     """
     Copy the pytree structure of tree but replace every subtree with same structure as constant with constant.
