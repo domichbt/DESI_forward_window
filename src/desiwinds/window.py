@@ -84,7 +84,7 @@ def get_window_spikes(
     survey_names: list[str] | None = None,
 ):
     """
-    Estimate the response (window matrix component) of a given observation forward modelling ``mock_survey`` for some fiducial theory input ``theory``.
+    Estimate the response (window matrix component) of a given observation forward modelling ``mock_survey`` for some fiducial theory input ``theory``, in theory bins with 'nmode' > 0.
 
     The estimation is done by injecting individual spikes of the theory power spectrum in mocks, forward modeling the selection effects and taking the derivative of the response at fiducial ``theory``.
 
@@ -121,6 +121,7 @@ def get_window_spikes(
     Notes
     -----
     The individual realizations are returned as a list of length ``nreal``, each entry being a list of ``lsstypes.WindowMatrix`` of length equal to the number of output power spectra of ``mock_survey``.
+    Computations are only done for theory bins with 'nmode' > 0.
     """
     mock_survey_args = mock_survey_args or ()
     mock_survey_kwargs = mock_survey_kwargs or {}
@@ -136,6 +137,9 @@ def get_window_spikes(
     survey_names = survey_names or [f"survey_{idx_survey:02d}" for idx_survey in range(len(observables))]
 
     theory_zeros = jnp.zeros_like(theory.value())
+    theory_nmodes = jnp.concatenate([pole.values("nmodes") for pole in theory.flatten()])
+    picked_bins = jnp.nonzero(theory_nmodes > 0)[0]
+    nbins = picked_bins.size
     # JIT the function retrieving the window component
     get_window = jax.jit(
         get_windows_component,
@@ -149,12 +153,12 @@ def get_window_spikes(
     windows = [[None for j in range(len(observables))] for i in range(nreal)]
 
     # Given batch size, how many loops do we run?
-    nsplits = (theory.size + batch_size - 1) // batch_size
+    nsplits = (nbins + batch_size - 1) // batch_size
+    chunks = jnp.array_split(picked_bins, nsplits)  # list of arrays with batch_size indices each, except maybe the last ones
     for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
-            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
-            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
+        for ichunk in tqdm(len(chunks), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
+            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in chunks[ichunk]])
             spectra = [
                 spectrum.T
                 for spectrum in get_window(
@@ -164,7 +168,7 @@ def get_window_spikes(
             for idx_spectrum, spectrum in enumerate(spectra):
                 if windows[imock][idx_spectrum] is None:
                     windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], theory.size))
-                windows[imock][idx_spectrum][..., slice(*islice)] = spectrum
+                windows[imock][idx_spectrum][..., chunks[ichunk]] = spectrum
         for idx_window, window in enumerate(windows[imock]):
             windows[imock][idx_window] = WindowMatrix(value=window, theory=theory, observable=observables[idx_window])
             if (tmpdir is not None) and jax.process_index() == 0:
@@ -190,7 +194,7 @@ def get_windows_spikes(
     survey_names: list[str] | None = None,
 ):
     """
-    Estimate the response (window matrix component) of a given set of observation forward modellings ``mock_surveys`` for some fiducial theory input ``theory``.
+    Estimate the response (window matrix component) of a given set of observation forward modellings ``mock_surveys`` for some fiducial theory input ``theory``, in theory bins with 'nmode' > 0.
 
     The estimation is done by injecting individual spikes of the theory power spectrum in mocks, forward modeling the selection effects and taking the derivative of the response at fiducial ``theory``.
 
@@ -225,6 +229,10 @@ def get_windows_spikes(
     -------
     tuple[list[lsstypes.WindowMatrix], list[list[lsstypes.WindowMatrix]]]
         The average window matrices over ``nreal`` realizations (for each set of observationnal effects) and the individual realizations (shape (nreal, nsurveys)).
+
+    Notes
+    -----
+    Computations are only done for theory bins with 'nmode' > 0.
     """
     mock_surveys_args = mock_surveys_args or ()
     mock_surveys_kwargs = mock_surveys_kwargs or {}
@@ -238,6 +246,10 @@ def get_windows_spikes(
     nsurveys = len(observables)
     observable = observables[0].clone(value=0.0 * observables[0].value())
     theory_zeros = jnp.zeros_like(theory.value())
+    theory_nmodes = jnp.concatenate([pole.values("nmodes") for pole in theory.flatten()])
+    picked_bins = jnp.nonzero(theory_nmodes > 0)[0]
+    nbins = picked_bins.size
+
     # JIT the function retrieving the window component
     get_windows = jax.jit(
         get_windows_component,
@@ -251,12 +263,13 @@ def get_windows_spikes(
     windows = [[None for j in range(nsurveys)] for i in range(nreal)]
 
     # Given batch size, how many loops do we run?
-    nsplits = (theory.size + batch_size - 1) // batch_size
+    nsplits = (nbins + batch_size - 1) // batch_size
+    chunks = jnp.array_split(picked_bins, nsplits)  # list of arrays with batch_size indices each, except maybe the last ones
     for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
-            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
-            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
+        for isplit in tqdm(range(len(chunks)), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
+            chunk = chunks[isplit]
+            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in chunk])
             spectra = [
                 wd.T
                 for wd in get_windows(
@@ -271,7 +284,7 @@ def get_windows_spikes(
             for isurvey in range(nsurveys):
                 if windows[imock][isurvey] is None:
                     windows[imock][isurvey] = np.zeros((spectra[isurvey].shape[0], theory.size))
-                windows[imock][isurvey][..., slice(*islice)] = spectra[isurvey]
+                windows[imock][isurvey][..., chunk] = spectra[isurvey]
         for isurvey in range(nsurveys):
             windows[imock][isurvey] = WindowMatrix(value=windows[imock][isurvey], theory=theory, observable=observable)
         if (tmpdir is not None) and jax.process_index() == 0:
