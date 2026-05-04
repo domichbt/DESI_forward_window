@@ -579,7 +579,7 @@ def prepare_NAM(
 
     Returns
     -------
-    RIC_args
+    NAM_args
         Custom pytree class that contains all necessary information to applying NAM/AIC in :py:func:`mock_survey_catalog`.
 
     Notes
