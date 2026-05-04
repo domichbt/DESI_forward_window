@@ -698,7 +698,7 @@ def apply_NAM(
         Input masks for each region for the data, shape (r, n_r,).
     data_pixels : jax.Array
         HEALPix of the data, shape (n_d,).
-    randoms_pixel : jax.Array
+    randoms_pixels : jax.Array
         HEALPix of the randoms, shape (n_r,).
     nside : int, optional
         Which NSIDE was used in the pixelization, by default 256.
