@@ -226,7 +226,7 @@ def split_into_fields(
 
     Notes
     -----
-    Arrays in ``extra`` will be sharded/distributed like `positions` and `weights`, and are available as regular attirbutes of the :class:`jaxpower.ParticleField` instance. See :class:`jaxpower.ParticleField` for more details.
+    Arrays in ``extra`` will be sharded/distributed like `positions` and `weights`, and are available as regular attributes of the :class:`jaxpower.ParticleField` instance. See :class:`jaxpower.ParticleField` for more details.
     """
     extra = extra or {}
     rng = np.random.default_rng(seed=split_seed)

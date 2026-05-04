@@ -256,7 +256,7 @@ def select_region(ra, dec, region=None, sharding_mesh=None):
         if isinstance(ra, jax.Array):
             return jnp.ones_like(ra, dtype=bool)
         else:
-            return np.ones_line(ra, dtype=bool)
+            return np.ones_like(ra, dtype=bool)
     mask_ngc = ra > 100 - dec
     mask_ngc &= ra < 280 + dec
     mask_n = mask_ngc & (dec > 32.375)

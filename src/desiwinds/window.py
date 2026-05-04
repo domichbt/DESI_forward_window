@@ -218,7 +218,7 @@ def get_windows_spikes(
         List of arguments in ``mock_surveys_kwargs`` that should passed to ``static_argnames`` when JITting.
     tmpdir: str | os.PathLike | None
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
-    name_surveys: list[str] | None
+    survey_names: list[str] | None
         Name of the subdirectories for each survey of ``mock_surveys``.
 
     Returns
