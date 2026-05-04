@@ -346,10 +346,10 @@ def prepare_AMR(
 
     for region, (zmin, zmax) in regions_zranges:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
-        data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
+        data_mask &= (zmin <= data_redshifts) & (data_redshifts < zmax)
 
         randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region, sharding_mesh=sharding_mesh)
-        randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts <= zmax)
+        randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts < zmax)
 
         data_regions.append(data_mask)
         randoms_regions.append(randoms_mask)
@@ -624,9 +624,9 @@ def prepare_NAM(
 
     for region, (zmin, zmax) in regions_zranges:
         data_mask = select_region(ra=data_ra, dec=data_dec, region=region, sharding_mesh=sharding_mesh)
-        data_mask &= (zmin <= data_redshifts) & (data_redshifts <= zmax)
+        data_mask &= (zmin <= data_redshifts) & (data_redshifts < zmax)
         randoms_mask = select_region(ra=randoms_ra, dec=randoms_dec, region=region, sharding_mesh=sharding_mesh)
-        randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts <= zmax)
+        randoms_mask &= (zmin <= randoms_redshifts) & (randoms_redshifts < zmax)
 
         if not data_mask.any():
             raise ValueError("No data in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
