@@ -539,6 +539,7 @@ NAM_args = make_jax_dataclass(
         "data_regions",
         "randoms_regions",
         "data_to_remove",
+        "invsigma2",
     ],
     aux_fields=["nside", "apply_to"],
     types_fields={
@@ -547,6 +548,7 @@ NAM_args = make_jax_dataclass(
         "data_regions": jax.Array,
         "randoms_regions": jax.Array,
         "data_to_remove": jax.Array,
+        "invsigma2": jax.Array,
         "nside": int,
         "apply_to": Literal["data", "randoms"],
     },
@@ -560,6 +562,7 @@ def prepare_NAM(
     # NAM specific parameters
     nside: int,
     apply_to: Literal["data", "randoms"],
+    prior: jax.Array | float | None = None,
 ) -> NAM_args:
     """
     Prepare arguments necessary to applying NAM/AIC in :py:func:`mock_survey_catalog`.
@@ -572,6 +575,8 @@ def prepare_NAM(
         Fields containing positions and weights of the randoms particles. Must have extra field ``"Z"`` (redshift) available.
     regions_zranges: list[tuple[str, tuple[float, float]]]
         Regions and redshift ranges to split data in.
+    prior : jax.Array | float | None, optional
+        Gaussian prior standard deviation(s) for the NAM/AIC weights, in the same order as the healpixels. If a scalar is provided, it will be applied to all pixels. If None is provided, no prior will be applied, which is equivalent to an infinite standard deviation, or zero inverse variance. By default None.
     nside : int
         NSIDE to use for healpixelization.
     apply_to : Literal["data", "randoms"]
@@ -586,6 +591,10 @@ def prepare_NAM(
     -----
     Healpix manipulation is always done in ``RING`` scheme.
     """
+    invsigma2 = jnp.atleast_1d(1.0 / prior**2 if prior is not None else 0.0)
+    if prior is not None and prior.shape not in [(12 * nside**2,), (1,)]:
+        raise ValueError("Prior should be either None, a scalar or an array of shape (12 * nside**2,)!")
+
     # Locally concatenate, preserving the sharding
     sharding_mesh = get_sharding_mesh()
     data_positions = local_concatenate([d.positions for d in data], axis=0, sharding_mesh=sharding_mesh)
@@ -667,6 +676,7 @@ def prepare_NAM(
         data_regions=data_regions,
         randoms_regions=randoms_regions,
         data_to_remove=data_but_no_randoms,
+        invsigma2=invsigma2,
         nside=nside,
         apply_to=apply_to,
     )
@@ -680,6 +690,7 @@ def apply_NAM(
     randoms_regions: jax.Array,
     data_pixels: jax.Array,
     randoms_pixels: jax.Array,
+    invsigma2: jax.Array,
     nside: int = 256,
     apply_to: Literal["data", "randoms"] = "randoms",
 ) -> jax.Array:
@@ -700,6 +711,8 @@ def apply_NAM(
         HEALPix of the data, shape (n_d,).
     randoms_pixels : jax.Array
         HEALPix of the randoms, shape (n_r,).
+    invsigma2 : jax.Array
+        Inverse variance of the Gaussian prior to apply to the weights. Shape should be broadcastable to (12 * nside**2,).
     nside : int, optional
         Which NSIDE was used in the pixelization, by default 256.
     apply_to : Literal["data", "randoms"], optional
@@ -734,11 +747,12 @@ def apply_NAM(
     alphas = (data_weights * data_regions).sum(axis=-1) / (randoms_weights * randoms_regions).sum(axis=-1)
     data_weights_binned = bincount(data_pixels, weights=data_regions * data_weights, length=12 * nside**2)
     randoms_weights_binned = bincount(randoms_pixels, weights=randoms_regions * randoms_weights, length=12 * nside**2)
-    nam_weights_binned = jnp.where(
+    ratio = jnp.where(
         randoms_weights_binned == 0,
         0.0,  # don't care, will never be applied
         data_weights_binned / (alphas[..., None] * randoms_weights_binned),
     )  # NOTE: this is not reverse-differentiation compatible
+    nam_weights_binned = (ratio**2 + invsigma2) / (ratio + invsigma2)
     nam_weights = jnp.where(randoms_regions, nam_weights_binned[..., randoms_pixels], 0.0)
     return nam_weights.sum(axis=range(nam_weights.ndim - 1)) + jnp.invert(randoms_regions.any(axis=0))  # sum over regions and add 1 where no region
 
