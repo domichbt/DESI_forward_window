@@ -752,7 +752,7 @@ def apply_NAM(
         0.0,  # don't care, will never be applied
         data_weights_binned / (alphas[..., None] * randoms_weights_binned),
     )  # NOTE: this is not reverse-differentiation compatible
-    nam_weights_binned = (ratio**2 + invsigma2) / (ratio + invsigma2)
+    nam_weights_binned = jnp.where(ratio == 0, 0.0, (ratio**2 + invsigma2) / (ratio + invsigma2))
     nam_weights = jnp.where(randoms_regions, nam_weights_binned[..., randoms_pixels], 0.0)
     return nam_weights.sum(axis=range(nam_weights.ndim - 1)) + jnp.invert(randoms_regions.any(axis=0))  # sum over regions and add 1 where no region
 
