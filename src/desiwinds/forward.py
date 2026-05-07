@@ -500,7 +500,7 @@ def apply_AMR(
 
     # shape: (regions, N_sys + 1, N_bins,  N_sys + 1)
     # The last dimension is for the matrix product with the coefficients vector
-    # The rightmost (N_sys + 1, N_bins) correspond, in spirit, to one big axis
+    # The leftmost (N_sys + 1, N_bins) correspond, in spirit, to one big axis
     randoms_templates_binned_exploded = bincount_sorted_vmapped(
         randoms_templates_digitized, randoms_weights * randoms_templates_normalized, randoms_isort, (n_bins + 2) * randoms_regions.shape[0], get_sharding_mesh()
     )
