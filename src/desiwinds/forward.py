@@ -592,7 +592,7 @@ def prepare_NAM(
     Healpix manipulation is always done in ``RING`` scheme.
     """
     invsigma2 = jnp.atleast_1d(1.0 / prior**2 if prior is not None else 0.0)
-    if prior is not None and prior.shape not in [(12 * nside**2,), (1,)]:
+    if prior is not None and jnp.atleast_1d(prior).shape not in [(12 * nside**2,), (1,)]:
         raise ValueError("Prior should be either None, a scalar or an array of shape (12 * nside**2,)!")
 
     # Locally concatenate, preserving the sharding
@@ -1058,6 +1058,7 @@ def mock_survey_catalog(
             randoms_regions=nam_arg.randoms_regions,
             data_pixels=nam_arg.data_pixels,
             randoms_pixels=nam_arg.randoms_pixels,
+            invsigma2=nam_arg.invsigma2,
             nside=nam_arg.nside,
             apply_to=nam_arg.apply_to,
         )
