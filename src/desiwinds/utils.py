@@ -507,21 +507,23 @@ def _prepare_templates(
         upper_tails = jnp.nanpercentile(nanfakes, 100 - tail / 2, axis=0, method="lower")
         bin_edges = jnp.linspace(start=lower_tails - bin_margin, stop=upper_tails + bin_margin, num=n_bins + 1)
 
-        non_extreme_data = jnp.all((data_templates[data_sel] >= lower_tails) & (data_templates[data_sel] <= upper_tails), axis=1)
-        non_extreme_rand = jnp.all((randoms_templates[rand_sel] >= lower_tails) & (randoms_templates[rand_sel] <= upper_tails), axis=1)
+        non_extreme_data = jnp.all((data_templates >= lower_tails) & (data_templates <= upper_tails), axis=1)
+        non_extreme_rand = jnp.all((randoms_templates >= lower_tails) & (randoms_templates <= upper_tails), axis=1)
 
         data_templates_normalized = data_templates_normalized.at[1:, data_sel].set(
-            (data_templates[data_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+            ((data_templates[data_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T
         )
         rand_templates_normalized = rand_templates_normalized.at[1:, rand_sel].set(
-            (randoms_templates[rand_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+            ((randoms_templates[rand_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T
         )
 
         data_templates_digitized = data_templates_digitized.at[1:, data_sel].set(
             jnp.where(
-                non_extreme_data[None, :],
+                non_extreme_data[None, data_sel],
                 jnp.clip(
-                    jnp.floor(data_templates_normalized[1:, data_sel] * n_bins).astype(int) - (data_templates_normalized[1:, data_sel] == bin_edges[-1, :]) + 1,
+                    jnp.floor(data_templates_normalized[1:, data_sel] * n_bins).astype(int)
+                    - (data_templates_normalized[1:, data_sel] == bin_edges[-1, :, None])
+                    + 1,
                     min=0,
                     max=n_bins + 1,
                 )
@@ -531,9 +533,11 @@ def _prepare_templates(
         ) + jnp.where(data_sel, ireg * (n_bins + 2), 0)  # i think this broadcasts ok
         rand_templates_digitized = rand_templates_digitized.at[1:, rand_sel].set(
             jnp.where(
-                non_extreme_rand[None, :],
+                non_extreme_rand[None, rand_sel],
                 jnp.clip(
-                    jnp.floor(rand_templates_normalized[1:, rand_sel] * n_bins).astype(int) - (rand_templates_normalized[1:, rand_sel] == bin_edges[-1, :]) + 1,
+                    jnp.floor(rand_templates_normalized[1:, rand_sel] * n_bins).astype(int)
+                    - (rand_templates_normalized[1:, rand_sel] == bin_edges[-1, :, None])
+                    + 1,
                     min=0,
                     max=n_bins + 1,
                 ),
