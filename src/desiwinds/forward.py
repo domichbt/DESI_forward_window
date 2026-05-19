@@ -438,7 +438,7 @@ def apply_AMR(
 
     Notes
     -----
-     * The regions mask should not contain the extremes, ohterwise the output weights for the extremes will be wrong.
+     * Particles without a region set will keep their initial weights.
      * Regions should not overlap, otherwise weights for multi-region particles will be wrong.
     """
     data_regions = jnp.atleast_2d(data_regions)
@@ -961,8 +961,6 @@ def mock_survey_catalog(
             randoms_weights=randoms_weights[idx],
             data_regions=amr_arg.data_regions,
             randoms_regions=amr_arg.randoms_regions,
-            data_extremes=amr_arg.data_extremes,
-            randoms_extremes=amr_arg.randoms_extremes,
             data_templates_digitized=amr_arg.data_templates_digitized,
             randoms_templates_digitized=amr_arg.randoms_templates_digitized,
             data_templates_normalized=amr_arg.data_templates_normalized,
