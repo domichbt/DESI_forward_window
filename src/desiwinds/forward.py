@@ -261,6 +261,7 @@ def prepare_AMR(
     tail: float = 0.5,
     bin_margin: float = 1e-7,
     n_bins: int = 10,
+    half_precision: bool = False,
 ) -> AMR_args:
     """
     Precompute all arguments necessary to get Angular Mode Removal in :py:func:`mock_survey_catalog`.
@@ -277,6 +278,8 @@ def prepare_AMR(
         Margin on the side of edges, by default 1e-7
     n_bins : int, optional
         Number of bins for each template in the regression, by default 10
+    half_precision : bool, optional
+        Whether to store normalized templates as ``float16`` and digitized templates at ``int16`` in the returned ``AMR_args`` to save space. False by default.
 
     Returns
     -------
@@ -367,6 +370,13 @@ def prepare_AMR(
 
     data_isort = local_argsort(data_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
     randoms_isort = local_argsort(randoms_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
+
+    if half_precision:
+        if apply_to == "data":
+            data_templates_normalized = data_templates_normalized.astype(jnp.float16)
+        randoms_templates_normalized = randoms_templates_normalized.astype(jnp.float16)
+        data_templates_digitized = data_templates_digitized.astype(jnp.int16)
+        randoms_templates_digitized = randoms_templates_digitized.astype(jnp.int16)
 
     return AMR_args(
         data_regions=data_regions,
