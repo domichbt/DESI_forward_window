@@ -532,11 +532,12 @@ def _prepare_templates(
                     jnp.floor(data_templates_normalized[1:, :] * n_bins).astype(int) - (data_templates_normalized[1:, :] == bin_edges[-1, :, None]) + 1,
                     min=0,
                     max=n_bins + 1,
-                )
-                + ireg * (n_bins + 2),
+                ),
                 data_templates_digitized[1:, :],
             )
-        )
+        ) + jnp.where((non_extreme_data & data_sel)[None, :], ireg * (n_bins + 2), 0)
+        # Manually force bin 0 for extreme objects for row 1 / constant template
+        data_templates_digitized = data_templates_digitized.at[0, :].set(jnp.where(data_sel & ~non_extreme_data, 0, data_templates_digitized[0, :]))
         rand_templates_digitized = rand_templates_digitized.at[1:, :].set(
             jnp.where(
                 (non_extreme_rand & rand_sel)[None, :],
@@ -544,11 +545,12 @@ def _prepare_templates(
                     jnp.floor(rand_templates_normalized[1:, :] * n_bins).astype(int) - (rand_templates_normalized[1:, :] == bin_edges[-1, :, None]) + 1,
                     min=0,
                     max=n_bins + 1,
-                )
-                + ireg * (n_bins + 2),
+                ),
                 rand_templates_digitized[1:, :],
             )
-        )
+        ) + jnp.where((non_extreme_rand & rand_sel)[None, :], ireg * (n_bins + 2), 0)
+        # Manually force bin 0 for extreme objects for row 1 / constant template
+        rand_templates_digitized = rand_templates_digitized.at[0, :].set(jnp.where(rand_sel & ~non_extreme_rand, rand_templates_digitized[0, :], 0))
 
     # In the end, normalized = normalized templates (per region) with first row of ones
     # digitized = digitized (per region), with first row of nbins-1, offset by (n_bins + 2) depending on the region, with extreme values set to bin 0 all the time
