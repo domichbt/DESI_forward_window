@@ -423,7 +423,7 @@ def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: l
     return jax.tree_util.register_pytree_node_class(cls)
 
 
-# @jax.jit(static_argnames=["tail", "n_bins", "bin_margin"])
+@jax.jit(static_argnames=["tail", "n_bins", "bin_margin", "sharding_mesh"])
 def prepare_templates(
     data_templates: jax.Array,
     randoms_templates: jax.Array,
@@ -510,40 +510,45 @@ def _prepare_templates(
         non_extreme_data = jnp.all((data_templates >= lower_tails) & (data_templates <= upper_tails), axis=1)
         non_extreme_rand = jnp.all((randoms_templates >= lower_tails) & (randoms_templates <= upper_tails), axis=1)
 
-        data_templates_normalized = data_templates_normalized.at[1:, data_sel].set(
-            ((data_templates[data_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T
+        data_templates_normalized = data_templates_normalized.at[1:, :].set(
+            jnp.where(
+                data_sel[None, :],
+                ((data_templates - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T,
+                data_templates_normalized[1:, :],
+            )
         )
-        rand_templates_normalized = rand_templates_normalized.at[1:, rand_sel].set(
-            ((randoms_templates[rand_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T
+        rand_templates_normalized = rand_templates_normalized.at[1:, :].set(
+            jnp.where(
+                rand_sel[None, :],
+                ((randoms_templates - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T,
+                rand_templates_normalized[1:, :],
+            )
         )
 
-        data_templates_digitized = data_templates_digitized.at[1:, data_sel].set(
+        data_templates_digitized = data_templates_digitized.at[1:, :].set(
             jnp.where(
-                non_extreme_data[None, data_sel],
+                (non_extreme_data & data_sel)[None, :],
                 jnp.clip(
-                    jnp.floor(data_templates_normalized[1:, data_sel] * n_bins).astype(int)
-                    - (data_templates_normalized[1:, data_sel] == bin_edges[-1, :, None])
-                    + 1,
+                    jnp.floor(data_templates_normalized[1:, :] * n_bins).astype(int) - (data_templates_normalized[1:, :] == bin_edges[-1, :, None]) + 1,
                     min=0,
                     max=n_bins + 1,
                 )
                 + ireg * (n_bins + 2),
-                0,
+                data_templates_digitized[1:, :],
             )
-        ) + jnp.where(data_sel, ireg * (n_bins + 2), 0)  # i think this broadcasts ok
-        rand_templates_digitized = rand_templates_digitized.at[1:, rand_sel].set(
+        )
+        rand_templates_digitized = rand_templates_digitized.at[1:, :].set(
             jnp.where(
-                non_extreme_rand[None, rand_sel],
+                (non_extreme_rand & rand_sel)[None, :],
                 jnp.clip(
-                    jnp.floor(rand_templates_normalized[1:, rand_sel] * n_bins).astype(int)
-                    - (rand_templates_normalized[1:, rand_sel] == bin_edges[-1, :, None])
-                    + 1,
+                    jnp.floor(rand_templates_normalized[1:, :] * n_bins).astype(int) - (rand_templates_normalized[1:, :] == bin_edges[-1, :, None]) + 1,
                     min=0,
                     max=n_bins + 1,
-                ),
-                0,
+                )
+                + ireg * (n_bins + 2),
+                rand_templates_digitized[1:, :],
             )
-        ) + jnp.where(rand_sel & non_extreme_rand, ireg * (n_bins + 2), 0)  # i think this broadcasts ok
+        )
 
     # In the end, normalized = normalized templates (per region) with first row of ones
     # digitized = digitized (per region), with first row of nbins-1, offset by (n_bins + 2) depending on the region, with extreme values set to bin 0 all the time
