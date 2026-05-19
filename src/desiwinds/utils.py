@@ -421,3 +421,126 @@ def make_jax_dataclass(class_name: str, dynamic_fields: list[str], aux_fields: l
     cls.tree_unflatten = tree_unflatten
 
     return jax.tree_util.register_pytree_node_class(cls)
+
+
+# @jax.jit(static_argnames=["tail", "n_bins", "bin_margin"])
+def prepare_templates(
+    data_templates: jax.Array,
+    randoms_templates: jax.Array,
+    data_regions: list[jax.Array],
+    randoms_regions: list[jax.Array],
+    randoms_is_real: jax.Array,
+    tail: float,
+    n_bins: int,
+    bin_margin: float,
+    sharding_mesh: jax.sharding.Mesh | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """
+    Prepare normalized and digitized photometry templates for AMR. Inputs are treated region by region; extremes are set to bin 0.
+
+    Parameters
+    ----------
+    data_templates : jax.Array
+        Input data template values, shape (n_d, n_sys).
+    randoms_templates : jax.Array
+        Input randoms template values, shape (n_r, n_sys).
+    data_regions : list[jax.Array]
+        List of masks for the data, for the different regions.
+    randoms_regions : list[jax.Array]
+        Lists of masks for the randoms, for the different regions.
+    randoms_is_real : jax.Array
+        Mask indicating real (non-padding) particles for the extremal values computation.
+    tail : float
+        Percentage for the extremal value cutoffs.
+    n_bins : int
+        Number of bins for the regression.
+    bin_margin : float
+        Extra padding for the edges of the bins.
+    sharding_mesh : jax.sharding.Mesh | None, optional
+        Sharding mesh to use for the ``shard_map``, by default None.
+
+    Returns
+    -------
+    data_templates_normalized, data_templates_digitized, rand_templates_normalized, rand_templates_digitized: tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+        Normalized and digitized template values for randoms and data. Shapes (n_sys + 1, n_d) and (n_sys + 1, n_r).
+
+    Notes
+    -----
+    This function correctly carries along sharding if input is sharded along the catalog (i.e. n_d/n_r size) axis and sharding_mesh is set accordingly.
+    """
+    args = data_templates, randoms_templates, data_regions, randoms_regions, randoms_is_real, tail, n_bins, bin_margin
+    if (sharding_mesh is None) or sharding_mesh.empty:
+        return _prepare_templates(*args)
+    else:
+        ax = sharding_mesh.axis_names
+        return shard_map(
+            _prepare_templates,
+            in_specs=(P(ax, None), P(ax, None), [P(ax)] * len(data_regions), [P(ax)] * len(randoms_regions), P(ax), None, None, None),
+            out_specs=(P(None, ax),) * 4,
+            mesh=sharding_mesh,
+        )(*args)
+
+
+def _prepare_templates(
+    data_templates: jax.Array,
+    randoms_templates: jax.Array,
+    data_regions: list[jax.Array],
+    randoms_regions: list[jax.Array],
+    randoms_is_real: jax.Array,
+    tail: float,
+    n_bins: int,
+    bin_margin: float,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    n_sys = data_templates.shape[1]
+    n_dat = data_templates.shape[0]
+    n_ran = randoms_templates.shape[0]
+    # initialize large arrays to fill
+    # careful: these are transposed compared to the input shapes
+    data_templates_normalized = jnp.zeros(shape=(n_sys + 1, n_dat), dtype=float).at[0].set(1.0)
+    rand_templates_normalized = jnp.zeros(shape=(n_sys + 1, n_ran), dtype=float).at[0].set(1.0)
+    data_templates_digitized = jnp.zeros(shape=(n_sys + 1, n_dat), dtype=int).at[0].set(n_bins - 1)
+    rand_templates_digitized = jnp.zeros(shape=(n_sys + 1, n_ran), dtype=int).at[0].set(n_bins - 1)
+
+    for ireg, (data_sel, rand_sel) in enumerate(zip(data_regions, randoms_regions, strict=True)):
+        nanfakes = jnp.where((randoms_is_real & rand_sel)[:, None], randoms_templates, jnp.nan)
+        lower_tails = jnp.nanpercentile(nanfakes, tail / 2, axis=0, method="higher")
+        upper_tails = jnp.nanpercentile(nanfakes, 100 - tail / 2, axis=0, method="lower")
+        bin_edges = jnp.linspace(start=lower_tails - bin_margin, stop=upper_tails + bin_margin, num=n_bins + 1)
+
+        non_extreme_data = jnp.all((data_templates[data_sel] >= lower_tails) & (data_templates[data_sel] <= upper_tails), axis=1)
+        non_extreme_rand = jnp.all((randoms_templates[rand_sel] >= lower_tails) & (randoms_templates[rand_sel] <= upper_tails), axis=1)
+
+        data_templates_normalized = data_templates_normalized.at[1:, data_sel].set(
+            (data_templates[data_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+        )
+        rand_templates_normalized = rand_templates_normalized.at[1:, rand_sel].set(
+            (randoms_templates[rand_sel] - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
+        )
+
+        data_templates_digitized = data_templates_digitized.at[1:, data_sel].set(
+            jnp.where(
+                non_extreme_data[None, :],
+                jnp.clip(
+                    jnp.floor(data_templates_normalized[1:, data_sel] * n_bins).astype(int) - (data_templates_normalized[1:, data_sel] == bin_edges[-1, :]) + 1,
+                    min=0,
+                    max=n_bins + 1,
+                )
+                + ireg * (n_bins + 2),
+                0,
+            )
+        ) + jnp.where(data_sel, ireg * (n_bins + 2), 0)  # i think this broadcasts ok
+        rand_templates_digitized = rand_templates_digitized.at[1:, rand_sel].set(
+            jnp.where(
+                non_extreme_rand[None, :],
+                jnp.clip(
+                    jnp.floor(rand_templates_normalized[1:, rand_sel] * n_bins).astype(int) - (rand_templates_normalized[1:, rand_sel] == bin_edges[-1, :]) + 1,
+                    min=0,
+                    max=n_bins + 1,
+                ),
+                0,
+            )
+        ) + jnp.where(rand_sel & non_extreme_rand, ireg * (n_bins + 2), 0)  # i think this broadcasts ok
+
+    # In the end, normalized = normalized templates (per region) with first row of ones
+    # digitized = digitized (per region), with first row of nbins-1, offset by (n_bins + 2) depending on the region, with extreme values set to bin 0 all the time
+    return data_templates_normalized, data_templates_digitized, rand_templates_normalized, rand_templates_digitized
