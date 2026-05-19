@@ -19,7 +19,7 @@ from jaxpower import (
 from jaxpower.mesh import get_sharding_mesh
 from lsstypes import Mesh2SpectrumPoles, ObservableTree
 
-from .utils import bincount, bincount_sorted, local_argsort, local_concatenate, local_split, make_jax_dataclass, select_region
+from .utils import bincount, bincount_sorted, local_argsort, local_concatenate, local_split, make_jax_dataclass, prepare_templates, select_region
 
 RIC_args = make_jax_dataclass(
     class_name="RIC_args",
@@ -229,8 +229,6 @@ AMR_args = make_jax_dataclass(
     dynamic_fields=[
         "data_regions",
         "randoms_regions",
-        "data_extremes",
-        "randoms_extremes",
         "data_templates_digitized",
         "randoms_templates_digitized",
         "data_templates_normalized",
@@ -242,8 +240,6 @@ AMR_args = make_jax_dataclass(
     types_fields={
         "data_regions": jax.Array,
         "randoms_regions": jax.Array,
-        "data_extremes": jax.Array,
-        "randoms_extremes": jax.Array,
         "data_templates_digitized": jax.Array,
         "randoms_templates_digitized": jax.Array,
         "data_templates_normalized": jax.Array,
@@ -302,10 +298,8 @@ def prepare_AMR(
     template_values_randoms = local_concatenate([r.extra["template_values"] for r in randoms], axis=0, sharding_mesh=sharding_mesh)
 
     # Compute the 0.5th and 99.5th percentiles of the templates in the randoms
-    # Need to work around fake particles
+    # Will need to work around fake particles
     randoms_is_real = local_concatenate([(_randoms.weights != 0) for _randoms in randoms], axis=0, sharding_mesh=sharding_mesh)
-    templates_lower_tails = jnp.nanpercentile(jnp.where(randoms_is_real[:, None], template_values_randoms, jnp.nan), tail / 2, axis=0, method="higher")
-    templates_upper_tails = jnp.nanpercentile(jnp.where(randoms_is_real[:, None], template_values_randoms, jnp.nan), 100 - tail / 2, axis=0, method="lower")
 
     # Now proceed as usual
 
@@ -316,30 +310,6 @@ def prepare_AMR(
     randoms_ra = (jnp.arctan2(randoms_positions[..., 1], randoms_positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
     data_dec = jnp.arcsin(data_positions[..., 2] / data_distances) * 180 / jnp.pi
     randoms_dec = jnp.arcsin(randoms_positions[..., 2] / randoms_distances) * 180 / jnp.pi
-
-    mask_extremes_d = jnp.all((template_values_data >= templates_lower_tails) & (template_values_data <= templates_upper_tails), axis=1)
-    mask_extremes_r = jnp.all((template_values_randoms >= templates_lower_tails) & (template_values_randoms <= templates_upper_tails), axis=1)
-
-    bin_edges = jnp.linspace(
-        start=templates_lower_tails - bin_margin,
-        stop=templates_upper_tails + bin_margin,
-        num=n_bins + 1,
-    )
-
-    templates_normalized_r = (template_values_randoms - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
-    templates_normalized_d = (template_values_data - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])
-
-    templates_digitized_r = jnp.clip(
-        jnp.floor(templates_normalized_r * n_bins).astype(int) - (templates_normalized_r == bin_edges[-1, :]) + 1,
-        min=0,
-        max=n_bins + 1,
-    )
-
-    templates_digitized_d = jnp.clip(
-        jnp.floor(templates_normalized_d * n_bins).astype(int) - (templates_normalized_d == bin_edges[-1, :]) + 1,
-        min=0,
-        max=n_bins + 1,
-    )
 
     data_regions = []
     randoms_regions = []
@@ -359,26 +329,23 @@ def prepare_AMR(
         if not randoms_mask.any():
             raise ValueError("No randoms in region %s, redshift range %.1f - %.1f. Cannot proceed.", region, zmin, zmax)
 
+    data_templates_normalized, data_templates_digitized, randoms_templates_normalized, randoms_templates_digitized = prepare_templates(
+        data_templates=template_values_data,
+        randoms_templates=template_values_randoms,
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
+        randoms_is_real=randoms_is_real,
+        tail=tail,
+        n_bins=n_bins,
+        bin_margin=bin_margin,
+        sharding_mesh=sharding_mesh,
+    )
+
     data_regions = jnp.stack(data_regions)
     randoms_regions = jnp.stack(randoms_regions)
 
-    # pre-computed templates
-    data_templates_digitized = jnp.vstack(
-        [jnp.full(shape=data_positions.shape[0], dtype=templates_digitized_d.dtype, fill_value=n_bins - 1), templates_digitized_d.T]
-    )
-    randoms_templates_digitized = jnp.vstack(
-        [jnp.full(shape=randoms_positions.shape[0], dtype=templates_digitized_r.dtype, fill_value=n_bins - 1), templates_digitized_r.T]
-    )
-
-    # Offset the digitized templates depending on the region
-    data_templates_digitized = data_templates_digitized + (n_bins + 2) * (jnp.arange(data_regions.shape[0])[:, None] * data_regions).sum(axis=0)
-    randoms_templates_digitized = randoms_templates_digitized + (n_bins + 2) * (jnp.arange(randoms_regions.shape[0])[:, None] * randoms_regions).sum(axis=0)
-
-    if apply_to == "data":
-        data_templates_normalized = jnp.vstack([jnp.ones_like(data_positions[:, 0]), templates_normalized_d.T])
-    else:
+    if not apply_to == "data":
         data_templates_normalized = None
-    randoms_templates_normalized = jnp.vstack([jnp.ones_like(randoms_positions[:, 0]), templates_normalized_r.T])
 
     data_coverage = data_regions.sum(axis=0)
     randoms_coverage = randoms_regions.sum(axis=0)
@@ -404,8 +371,6 @@ def prepare_AMR(
     return AMR_args(
         data_regions=data_regions,
         randoms_regions=randoms_regions,
-        data_extremes=mask_extremes_d,
-        randoms_extremes=mask_extremes_r,
         data_templates_digitized=data_templates_digitized,
         randoms_templates_digitized=randoms_templates_digitized,
         data_templates_normalized=data_templates_normalized,
@@ -426,8 +391,6 @@ def apply_AMR(
     randoms_weights: jax.Array,
     data_regions: jax.Array,
     randoms_regions: jax.Array,
-    data_extremes: jax.Array,
-    randoms_extremes: jax.Array,
     data_templates_digitized: jax.Array,
     randoms_templates_digitized: jax.Array,
     data_templates_normalized: jax.Array | None,
@@ -450,10 +413,6 @@ def apply_AMR(
         Input masks for each region for the data, shape (r, n_d,).
     randoms_regions : jax.Array
         Input masks for each region for the data, shape (r, n_r,).
-    data_extremes : jax.Array
-        Mask indicating extreme template values to discard in the data.
-    randoms_extremes : jax.Array
-        Mask indicating extreme template values to discard in the randoms.
     data_templates_digitized : jax.Array
         Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ``n_bins - 1`` for the constant term.
     randoms_templates_digitized : jax.Array
@@ -479,14 +438,12 @@ def apply_AMR(
 
     Notes
     -----
-     * The regions mask should not contain the extremes, ohterwise the output weights for the extremes will be wrong.
+     * Particles without a region set will keep their initial weights.
      * Regions should not overlap, otherwise weights for multi-region particles will be wrong.
     """
     data_regions = jnp.atleast_2d(data_regions)
     randoms_regions = jnp.atleast_2d(randoms_regions)
 
-    data_weights = data_weights * data_extremes
-    randoms_weights = randoms_weights * randoms_extremes
     # shapes: (regions, N_sys + 1, N_bins)
     data_binned_exploded = bincount_sorted_vmapped(
         data_templates_digitized, data_weights, data_isort, (n_bins + 2) * data_regions.shape[0], get_sharding_mesh()
@@ -1018,8 +975,6 @@ def mock_survey_catalog(
             randoms_weights=randoms_weights[idx],
             data_regions=amr_arg.data_regions,
             randoms_regions=amr_arg.randoms_regions,
-            data_extremes=amr_arg.data_extremes,
-            randoms_extremes=amr_arg.randoms_extremes,
             data_templates_digitized=amr_arg.data_templates_digitized,
             randoms_templates_digitized=amr_arg.randoms_templates_digitized,
             data_templates_normalized=amr_arg.data_templates_normalized,
