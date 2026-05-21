@@ -476,7 +476,7 @@ def apply_AMR(
     normalization = (randoms_regions * randoms_weights).sum(axis=1) / (data_regions * data_weights).sum(axis=1)
     prefactor = jnp.where(randoms_binned != 0, jnp.sqrt(normalization[:, None, None] / randoms_binned), 0.0)
 
-    X = prefactor[..., None] * randoms_templates_binned
+    X = prefactor[..., None] * randoms_templates_binned / normalization[..., None, None, None]
     y = prefactor * (data_binned - randoms_binned / normalization[..., None, None])
 
     Xty = jnp.einsum("rijp, rij -> rp ", X, y)
