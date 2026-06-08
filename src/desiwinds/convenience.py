@@ -166,6 +166,9 @@ def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | 
     debv = common.get_debv(ebv_path)
     cols = list(sysmaps.dtype.names)  # names of templates
 
+    if "ZCMB" in need_maps:
+        sysmaps["ZCMB"] = common.mk_zcmbmap()
+
     for col in cols:
         if "DEPTH" in col:
             bnd = col.split("_")[-1]
