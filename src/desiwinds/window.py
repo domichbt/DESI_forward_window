@@ -129,6 +129,12 @@ def get_window_spikes(
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
 
+    if jnp.iscomplexobj(theory.value()):
+        if jnp.iscomplex(theory.value()).any():
+            raise ValueError("Cannot handle complex-valued theory.")
+        else:
+            theory = theory.clone(theory.value().real)
+
     # Get some empty theory and observable to use their shapes when creating the window matrix
     observables = mock_survey(*mock_survey_args, theory=theory, seed=jax.random.key(42), **mock_survey_kwargs)
     observables = [observable.clone(value=0.0 * observable.value()) for observable in observables]
@@ -232,6 +238,12 @@ def get_windows_spikes(
     static_argnames = [*static_argnames, "mock_surveys"]
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
+
+    if jnp.iscomplexobj(theory.value()):
+        if jnp.iscomplex(theory.value()).any():
+            raise ValueError("Cannot handle complex-valued theory.")
+        else:
+            theory = theory.clone(theory.value().real)
 
     # Get some empty theory and observable to use their shapes when creating the window matrix
     observables = mock_surveys(*mock_surveys_args, theory=theory, seed=jax.random.key(42), **mock_surveys_kwargs)
