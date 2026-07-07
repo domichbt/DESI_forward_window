@@ -1110,7 +1110,7 @@ def mock_whitenoise(
     *fkp_fields : FKPField | tuple[FKPField, FKPField]
         FKP fields containing data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should also be randoms), but the FKP field serves to designate data and randoms amongst the original randoms. One field per desired output power spectrum. Example: NGC and SGC can be provided as two separate FKP fields, to get two output spectra. Pass several **tuples** of FKP fields to compute cross-spectra, for example (LRG_NGC, ELG_NGC) and (LRG_SGC, ELG_SGC) to get the LRGxELG cross-spectra in NGC and SGC.
     sigma : jax.Array | tuple[jax.Array, jax.Array]
-        Standard deviation for the Gaussian white noise generation. Different values can be provided for cross-correlations.
+        Standard deviation for the Gaussian white noise generation. Different values can be provided for cross-correlations of independent fields.
     seed : jax.Array
         Random seed for the mock survey mesh generation.
     los : Literal["local", "x", "y", "z"]
@@ -1135,7 +1135,7 @@ def mock_whitenoise(
     Returns
     -------
     list[Mesh2SpectrumPoles]
-        Power spectra of one realization of shot noise; one for each FKP field.
+        Power spectra of one realization of shot noise; one for each FKP field or pair of FKP fields.
 
     Notes
     -----
@@ -1172,7 +1172,7 @@ def mock_whitenoise(
     >>> pk_sgc, pk_ngc = fw_jit(
             (fkp_sgc_tracer1, fkp_sgc_tracer2),
             (fkp_ngc_tracer1, fkp_ngc_tracer2),
-            sigma=jnp.array([1.]),
+            sigma=(jnp.array([1.]), jnp.array([1.])), # independent white noises
             seed=jax.random.key(42),
             los="local",
             ric_args=(ric_args_tracer1, ric_args_tracer2),
@@ -1185,7 +1185,7 @@ def mock_whitenoise(
         )
 
     For one tracer and a single region, with RIC and NAM applied:
-    >>> fw_jit = jax.jit(mock_survey_catalog, static_argnames=["los", "unitary_amplitude"])
+    >>> fw_jit = jax.jit(mock_survey_catalog, static_argnames=["los"])
     >>> pk = fw_jit(
             fkp_sgc_tracer1,
             sigma=jnp.array([1.]),
@@ -1195,6 +1195,23 @@ def mock_whitenoise(
             amr_args=None,
             nam_args=nam_args,
             fkp_norms=fkp_norm,
+            binner=binner,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+        )
+
+    For one tracer with OQE weights ("cross" correlation), with NGC and SGC as two separate FKP fields, and RIC and AMR applied to both:
+    >>> fw_jit = jax.jit(mock_shotnoise_catalog, static_argnames=["los"])
+    >>> pk_sgc, pk_ngc = fw_jit(
+            (fkp_sgc_oqe1, fkp_sgc_oqe2),
+            (fkp_ngc_oqe1, fkp_ngc_oqe2),
+            sigma=jnp.array([1.]), # same white noise realisation for both
+            seed=jax.random.key(42),
+            los="local",
+            ric_args=ric_args,
+            amr_args=amr_args,
+            nam_args=None,
+            fkp_norms=fkp_norms,
             binner=binner,
             data_regions=ric_args.data_regions,
             randoms_regions=ric_args.randoms_regions,
@@ -1222,9 +1239,15 @@ def mock_whitenoise(
         for region_group in zip(*fkp_fields, strict=True)
     ]
 
-    # add white noise to the data weights
-    keys = jax.random.split(seed, len(fkp_fields))
-    data_weights = [weights * (jax.random.normal(key, shape=weights.shape, dtype=float) * sig + 1.0) for weights, key, sig in zip(data_weights, keys, sigma)]
+    # add white noise to the data weights, one key per sigma
+    keys = jax.random.split(seed, len(sigma))
+    if (len(sigma) == 1) and (len(data_weights) == 2):  # force same noise on both fields
+        data_weights = [weights * (jax.random.normal(keys[0], shape=weights.shape, dtype=float) * sigma[0] + 1.0) for weights in data_weights]
+    else:  # independent noise on each field
+        data_weights = [
+            weights * (jax.random.normal(key, shape=weights.shape, dtype=float) * sig + 1.0)
+            for weights, key, sig in zip(data_weights, keys, sigma, strict=True)
+        ]
 
     for idx, ric_arg in enumerate(ric_args):
         # if ric_args was set to None in call, ric_args is now an empty tuple, so the loop will be skipped
