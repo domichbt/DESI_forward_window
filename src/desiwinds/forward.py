@@ -1083,6 +1083,291 @@ def mock_survey_catalog(
     return pks
 
 
+def mock_whitenoise(
+    # Catalogs
+    *fkp_fields: FKPField | tuple[FKPField, FKPField],
+    # White noise generation
+    sigma: jax.Array | tuple[jax.Array, jax.Array],
+    seed: jax.Array,
+    los: Literal["local", "x", "y", "z"],
+    # Effects
+    ric_args: RIC_args | tuple[RIC_args, RIC_args] | None,
+    amr_args: AMR_args | tuple[AMR_args, AMR_args] | None,
+    nam_args: NAM_args | tuple[NAM_args, NAM_args] | None,
+    # Final P(k) estimation
+    binner: BinMesh2SpectrumPoles,
+    fkp_norms: list[jax.Array],
+    estimator_weights: str | tuple[str, str] | None,
+    # For region renormalization (need to be concatenated if multiple catalogs)
+    data_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
+    randoms_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
+) -> list[Mesh2SpectrumPoles]:
+    """
+    Get the "windowed" power specturm of an input shot noise given a seed and a set of observational effects.
+
+    Parameters
+    ----------
+    *fkp_fields : FKPField | tuple[FKPField, FKPField]
+        FKP fields containing data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should also be randoms), but the FKP field serves to designate data and randoms amongst the original randoms. One field per desired output power spectrum. Example: NGC and SGC can be provided as two separate FKP fields, to get two output spectra. Pass several **tuples** of FKP fields to compute cross-spectra, for example (LRG_NGC, ELG_NGC) and (LRG_SGC, ELG_SGC) to get the LRGxELG cross-spectra in NGC and SGC.
+    sigma : jax.Array | tuple[jax.Array, jax.Array]
+        Standard deviation for the Gaussian white noise generation. Different values can be provided for cross-correlations of independent fields.
+    seed : jax.Array
+        Random seed for the mock survey mesh generation.
+    los : Literal["local", "x", "y", "z"]
+        Line of sight definition for the mock generation.
+    ric_args : RIC_args | tuple[RIC_args, RIC_args] | None
+        Fixed, precomputed arguments for RIC weights computation by :py:func:`desiwinds.forward.apply_RIC`. Obtain with :py:func:`desiwinds.forward.prepare_RIC`. One per tracer for cross correlation.
+    amr_args : AMR_args | tuple[AMR_args, AMR_args] | None
+        Fixed, precomputed arguments for AMR weights computation by :py:func:`desiwinds.forward.apply_AMR`. Obtain with :py:func:`desiwinds.forward.prepare_AMR`. One per tracer for cross correlation.
+    nam_args : NAM_args | tuple[NAM_args, NAM_args] | None
+        Fixed, precomputed arguments for NAM weights computation by :py:func:`desiwinds.forward.apply_NAM`. Obtain with :py:func:`desiwinds.forward.prepare_NAM`. One per tracer for cross correlation.
+    binner : BinMesh2SpectrumPoles
+        Binning operator for the power spectrum estimation.
+    fkp_norms : list[jax.Array]
+        Pre-computed power spectrum norms for the FKP fields ``fkp_fields``, disregarding any future changes in weights.
+    estimator_weights : str | tuple[str, str] | None, optional
+        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time. For example, FKP or OQE weights should not be applied for RIC and AMR but should be added at the spectrum estimation time. Default is ``None`` (no extra weight). Can pass a pair of strings for cross correlation.
+    data_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
+        Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``data_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
+    randoms_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
+        Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``randoms_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
+
+    Returns
+    -------
+    list[Mesh2SpectrumPoles]
+        Power spectra of one realization of shot noise; one for each FKP field or pair of FKP fields.
+
+    Notes
+    -----
+    * RIC is applied first, then AMR, then NAM.
+    * The data to randoms renormalization is applied last, after all weights modifications.
+    * To reproduce the DESI process, use RIC and AMR. NAM is not part of the standard pipeline.
+        * RIC is applied to NGC and SGC together, ie to N/S/DES. No redshift ranges.
+        * AMR is also applied to NGC and SGC together, with wide redshift bins.
+        * NAM is not necessary but should be applied like AMR if needed.
+        * The data to randoms renormalization is done to NGC and SGC together. Arguments ``data_regions`` and ``randoms_regions`` from ``ric_args`` are suitable.
+    * Most of the time, it is preferable to apply RIC, AMR and NAM to the randoms; this is especially true when this function is used to generate window matrices.
+
+    Examples
+    --------
+    For one tracer (autocorrelation), with NGC and SGC as two separate FKP fields, and RIC and AMR applied to both:
+    >>> fw_jit = jax.jit(mock_shotnoise_catalog, static_argnames=["los"])
+    >>> pk_sgc, pk_ngc = fw_jit(
+            fkp_sgc,
+            fkp_ngc,
+            sigma=jnp.array([1.]),
+            seed=jax.random.key(42),
+            los="local",
+            ric_args=ric_args,
+            amr_args=amr_args,
+            nam_args=None,
+            fkp_norms=fkp_norms,
+            binner=binner,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+        )
+
+    For two tracers (cross-correlation), with NGC and SGC as two separate FKP fields, and RIC and AMR applied to both:
+    >>> fw_jit = jax.jit(mock_shotnoise_catalog, static_argnames=["los"])
+    >>> pk_sgc, pk_ngc = fw_jit(
+            (fkp_sgc_tracer1, fkp_sgc_tracer2),
+            (fkp_ngc_tracer1, fkp_ngc_tracer2),
+            sigma=(jnp.array([1.]), jnp.array([1.])), # independent white noises
+            seed=jax.random.key(42),
+            los="local",
+            ric_args=(ric_args_tracer1, ric_args_tracer2),
+            amr_args=(amr_args_tracer1, amr_args_tracer2),
+            nam_args=None,
+            fkp_norms=fkp_norms,
+            binner=binner,
+            data_regions=tuple(ric_arg.data_regions for ric_arg in ric_args),
+            randoms_regions=tuple(ric_arg.randoms_regions for ric_arg in ric_args),
+        )
+
+    For one tracer and a single region, with RIC and NAM applied:
+    >>> fw_jit = jax.jit(mock_survey_catalog, static_argnames=["los"])
+    >>> pk = fw_jit(
+            fkp_sgc_tracer1,
+            sigma=jnp.array([1.]),
+            seed=jax.random.key(42),
+            los="local",
+            ric_args=ric_args,
+            amr_args=None,
+            nam_args=nam_args,
+            fkp_norms=fkp_norm,
+            binner=binner,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+        )
+
+    For one tracer with OQE weights ("cross" correlation), with NGC and SGC as two separate FKP fields, and RIC and AMR applied to both:
+    >>> fw_jit = jax.jit(mock_shotnoise_catalog, static_argnames=["los"])
+    >>> pk_sgc, pk_ngc = fw_jit(
+            (fkp_sgc_oqe1, fkp_sgc_oqe2),
+            (fkp_ngc_oqe1, fkp_ngc_oqe2),
+            sigma=jnp.array([1.]), # same white noise realisation for both
+            seed=jax.random.key(42),
+            los="local",
+            ric_args=ric_args,
+            amr_args=amr_args,
+            nam_args=None,
+            fkp_norms=fkp_norms,
+            binner=binner,
+            data_regions=ric_args.data_regions,
+            randoms_regions=ric_args.randoms_regions,
+        )
+    """
+    sigma = sigma if isinstance(sigma, tuple) else (sigma,)
+    ric_args = () if ric_args is None else (ric_args if isinstance(ric_args, tuple) else (ric_args,))
+    amr_args = () if amr_args is None else (amr_args if isinstance(amr_args, tuple) else (amr_args,))
+    nam_args = () if nam_args is None else (nam_args if isinstance(nam_args, tuple) else (nam_args,))
+    data_regions = () if data_regions is None else (data_regions if isinstance(data_regions, tuple) else (data_regions,))
+    randoms_regions = () if randoms_regions is None else (randoms_regions if isinstance(randoms_regions, tuple) else (randoms_regions,))
+
+    sharding_mesh = get_sharding_mesh()
+    # ensure all fields are tuples, for easier processing later
+    # they will be unpacked for P(k) anyways
+    fkp_fields = tuple(fkp_field if isinstance(fkp_field, tuple) else (fkp_field,) for fkp_field in fkp_fields)
+
+    # Length of list = 1 or 2 dependent on whether we are doing auto or cross spectra
+    data_weights = [
+        local_concatenate([fkp_field.data.weights for fkp_field in region_group], axis=0, sharding_mesh=sharding_mesh)
+        for region_group in zip(*fkp_fields, strict=True)
+    ]
+    randoms_weights = [
+        local_concatenate([fkp_field.randoms.weights for fkp_field in region_group], axis=0, sharding_mesh=sharding_mesh)
+        for region_group in zip(*fkp_fields, strict=True)
+    ]
+
+    # add white noise to the data weights, one key per sigma
+    keys = jax.random.split(seed, len(sigma))
+    if (len(sigma) == 1) and (len(data_weights) == 2):  # force same noise on both fields
+        data_weights = [weights * (jax.random.normal(keys[0], shape=weights.shape, dtype=float) * sigma[0] + 1.0) for weights in data_weights]
+    else:  # independent noise on each field
+        data_weights = [
+            weights * (jax.random.normal(key, shape=weights.shape, dtype=float) * sig + 1.0)
+            for weights, key, sig in zip(data_weights, keys, sigma, strict=True)
+        ]
+
+    for idx, ric_arg in enumerate(ric_args):
+        # if ric_args was set to None in call, ric_args is now an empty tuple, so the loop will be skipped
+        ric_weight = apply_RIC(
+            data_weights=data_weights[idx],
+            randoms_weights=randoms_weights[idx],
+            data_regions=ric_arg.data_regions,
+            randoms_regions=ric_arg.randoms_regions,
+            data_distances_digitized=ric_arg.data_distances_digitized,
+            randoms_distances_digitized=ric_arg.randoms_distances_digitized,
+            n_bins=ric_arg.n_bins,
+            apply_to=ric_arg.apply_to,
+        )
+        if ric_arg.apply_to == "data":
+            data_weights[idx] = data_weights[idx] * ric_weight
+        else:
+            randoms_weights[idx] = randoms_weights[idx] * ric_weight
+
+    for idx, amr_arg in enumerate(amr_args):
+        amr_weights = apply_AMR(
+            data_weights=data_weights[idx],
+            randoms_weights=randoms_weights[idx],
+            data_regions=amr_arg.data_regions,
+            randoms_regions=amr_arg.randoms_regions,
+            data_templates_digitized=amr_arg.data_templates_digitized,
+            randoms_templates_digitized=amr_arg.randoms_templates_digitized,
+            data_templates_normalized=amr_arg.data_templates_normalized,
+            randoms_templates_normalized=amr_arg.randoms_templates_normalized,
+            data_isort=amr_arg.data_isort,
+            randoms_isort=amr_arg.randoms_isort,
+            n_bins=amr_arg.n_bins,
+            apply_to=amr_arg.apply_to,
+        )
+        if amr_arg.apply_to == "data":
+            data_weights[idx] = data_weights[idx] * amr_weights
+        else:
+            randoms_weights[idx] = randoms_weights[idx] * amr_weights
+        # Need to re-enforce RIC after AMR. Corresponds to adding w_sys to randoms by joining on TARGETID_DATA in the DESI pipeline
+        if ric_args:
+            ric_weights = apply_RIC(
+                data_weights=data_weights[idx],
+                randoms_weights=randoms_weights[idx],
+                data_regions=ric_args[idx].data_regions,
+                randoms_regions=ric_args[idx].randoms_regions,
+                data_distances_digitized=ric_args[idx].data_distances_digitized,
+                randoms_distances_digitized=ric_args[idx].randoms_distances_digitized,
+                n_bins=ric_args[idx].n_bins,
+                apply_to=ric_args[idx].apply_to,
+            )
+            if ric_args[idx].apply_to == "data":
+                data_weights[idx] = data_weights[idx] * ric_weights
+            else:
+                randoms_weights[idx] = randoms_weights[idx] * ric_weights
+
+    for idx, nam_arg in enumerate(nam_args):
+        nam_weights = apply_NAM(
+            data_weights=data_weights[idx],
+            randoms_weights=randoms_weights[idx],
+            data_regions=nam_arg.data_regions,
+            randoms_regions=nam_arg.randoms_regions,
+            data_pixels=nam_arg.data_pixels,
+            randoms_pixels=nam_arg.randoms_pixels,
+            invsigma2=nam_arg.invsigma2,
+            nside=nam_arg.nside,
+            apply_to=nam_arg.apply_to,
+        )
+        if nam_arg.apply_to == "data":
+            data_weights[idx] = data_weights[idx] * nam_weights
+        else:
+            randoms_weights[idx] = randoms_weights[idx] * nam_weights
+
+    # global randoms renormalization per region
+    for idx, (_randoms_regions, _data_regions) in enumerate(zip(randoms_regions, data_regions, strict=True)):
+        global_alpha = data_weights[idx].sum() / randoms_weights[idx].sum()
+        alphas = (data_weights[idx] * _data_regions).sum(axis=-1) / (randoms_weights[idx] * _randoms_regions).sum(axis=-1)
+        correction = (_randoms_regions * alphas[..., None] / global_alpha).sum(axis=0) + jnp.invert(
+            _randoms_regions.any(axis=0)
+        )  # apply alpha/global_alpha inside regions, 1 outside
+        randoms_weights[idx] = randoms_weights[idx] * correction
+
+    # Rebuild FKP fields
+    # Split back the weights
+    split_indices_data = tuple(
+        list(itertools.accumulate([fkp_field.data.weights.shape[0] for fkp_field in region_group]))[:-1]
+        for region_group in zip(
+            *fkp_fields,
+            strict=True,
+        )
+    )
+    data_weights = tuple(
+        zip(
+            *(
+                local_split(data_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
+                for data_weight, split_idx in zip(data_weights, split_indices_data, strict=True)
+            ),
+            strict=True,
+        )
+    )
+    split_indices_randoms = tuple(
+        list(itertools.accumulate([fkp_field.randoms.weights.shape[0] for fkp_field in region_group]))[:-1]
+        for region_group in zip(
+            *fkp_fields,
+            strict=True,
+        )
+    )
+    randoms_weights = tuple(
+        zip(
+            *(
+                local_split(randoms_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
+                for randoms_weight, split_idx in zip(randoms_weights, split_indices_randoms, strict=True)
+            ),
+            strict=True,
+        )
+    )
+
+    fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
+    pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
+    return pks
+
+
 def mock_survey_mesh(
     # Gaussian mock generation
     theory: ObservableTree,
