@@ -1073,7 +1073,6 @@ def mock_survey_catalog(
             strict=True,
         )
     )
-    jax.block_until_ready(split_indices_data)
     data_weights = tuple(
         zip(
             *(
@@ -1090,7 +1089,6 @@ def mock_survey_catalog(
             strict=True,
         )
     )
-    jax.block_until_ready(split_indices_randoms)
     randoms_weights = tuple(
         zip(
             *(
