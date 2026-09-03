@@ -1118,6 +1118,7 @@ def mock_whitenoise(
     seed: jax.Array,
     los: Literal["local", "x", "y", "z"],
     # Effects
+    gic: bool = True,
     ric_args: RIC_args | tuple[RIC_args, RIC_args] | None,
     amr_args: AMR_args | tuple[AMR_args, AMR_args] | None,
     nam_args: NAM_args | tuple[NAM_args, NAM_args] | None,
@@ -1142,6 +1143,8 @@ def mock_whitenoise(
         Random seed for the mock survey mesh generation.
     los : Literal["local", "x", "y", "z"]
         Line of sight definition for the mock generation.
+    gic : bool
+        Whether to apply the global integral constaint. Default is True. Setting any additional effects (RIC, AMR, NAM) forces GIC.
     ric_args : RIC_args | tuple[RIC_args, RIC_args] | None
         Fixed, precomputed arguments for RIC weights computation by :py:func:`desiwinds.forward.apply_RIC`. Obtain with :py:func:`desiwinds.forward.prepare_RIC`. One per tracer for cross correlation.
     amr_args : AMR_args | tuple[AMR_args, AMR_args] | None
@@ -1244,6 +1247,9 @@ def mock_whitenoise(
             randoms_regions=ric_args.randoms_regions,
         )
     """
+    if (not gic) and any(x is not None for x in (ric_args, amr_args, nam_args, data_regions, randoms_regions)):
+        gic = True
+
     sigma = sigma if isinstance(sigma, tuple) else (sigma,)
     ric_args = () if ric_args is None else (ric_args if isinstance(ric_args, tuple) else (ric_args,))
     amr_args = () if amr_args is None else (amr_args if isinstance(amr_args, tuple) else (amr_args,))
@@ -1255,6 +1261,11 @@ def mock_whitenoise(
     # ensure all fields are tuples, for easier processing later
     # they will be unpacked for P(k) anyways
     fkp_fields = tuple(fkp_field if isinstance(fkp_field, tuple) else (fkp_field,) for fkp_field in fkp_fields)
+
+    if gic:
+        alphas_gic = None
+    else:
+        alphas_gic = jax.tree.map(lambda fkp: fkp.data.weights.sum() / fkp.randoms.weights.sum(), fkp_fields, is_leaf=lambda x: isinstance(x, FKPField))
 
     # Length of list = 1 or 2 dependent on whether we are doing auto or cross spectra
     data_weights = [
@@ -1391,7 +1402,13 @@ def mock_whitenoise(
     )
 
     fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
-    pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
+    if gic:
+        pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
+    else:
+        pks = [
+            _get_pk_nogic(*fkp_field, alphas=alpha_gic, fkp_norm=fkp_norm, binner=binner, los=los)
+            for fkp_field, alpha_gic, fkp_norm in zip(fkp_fields, alphas_gic, fkp_norms, strict=True)
+        ]
     return pks
 
 
