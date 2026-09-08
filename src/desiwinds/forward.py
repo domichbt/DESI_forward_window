@@ -1424,6 +1424,7 @@ def mock_survey_mesh(
     # selections
     selection1: RealMeshField,
     selection2: RealMeshField,
+    gic: bool,
     ric: bool,
     nbins: int = 1000,
     # regions
@@ -1450,8 +1451,10 @@ def mock_survey_mesh(
         Survey selection function, i.e. pre-painted randoms catalogs.
     selection2 : RealMeshField
         Survey selection function, i.e. pre-painted randoms catalogs. Should be an independent set of randoms with regard to ``selection1`` to avoid shot noise.
+    gic : bool
+        Whether to apply geometric integral constraint.
     ric : bool
-        Whether to apply radial integral constraint.
+        Whether to apply radial integral constraint. This will automatically enforce the global integral constraint as well.
     nbins : int
         Number of radial bins for the RIC.
     ric_regions : list[jax.Array] | None
@@ -1479,6 +1482,9 @@ def mock_survey_mesh(
     mesh1 = _mesh * selection1
     mesh2 = _mesh * selection2
     del _mesh
+    if gic:
+        mesh1 -= selection1 * jnp.sum(mesh1) / jnp.sum(selection1)
+        mesh2 -= selection2 * jnp.sum(mesh2) / jnp.sum(selection2)
     if ric:
         dmin = jnp.min(mattrs.boxcenter - mattrs.boxsize / 2.0)
         dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((mattrs.boxcenter + mattrs.boxsize / 2.0) ** 2))
