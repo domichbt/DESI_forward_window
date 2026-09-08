@@ -125,7 +125,7 @@ def get_window_spikes(
     mock_survey_args = mock_survey_args or ()
     mock_survey_kwargs = mock_survey_kwargs or {}
     static_argnames = static_argnames or []
-    static_argnames = [*static_argnames, "mock_surveys"]
+    static_argnames = [*static_argnames, "mock_surveys", "batch_size"]
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
 
@@ -154,27 +154,27 @@ def get_window_spikes(
     # Initialize a list of windows to fill later
     windows = [[None for j in range(len(observables))] for i in range(nreal)]
 
-    # Given batch size, how many loops do we run?
-    nsplits = (theory.size + batch_size - 1) // batch_size
+    n = theory_zeros.size
+    spikes = jnp.eye(n, dtype=theory_zeros.dtype).reshape((n, *theory_zeros.shape))
+
     for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
-            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
-            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-            spectra = [
-                spectrum.T
-                for spectrum in get_window(
-                    *mock_survey_args, fiducial_theory=theory, injected_theory=spikes, seed=seed, mock_surveys=mock_survey, **mock_survey_kwargs
-                )
-            ]
-            for idx_spectrum, spectrum in enumerate(spectra):
-                if windows[imock][idx_spectrum] is None:
-                    windows[imock][idx_spectrum] = np.zeros((spectrum.shape[0], theory.size))
-                windows[imock][idx_spectrum][..., slice(*islice)] = spectrum
-        for idx_window, window in enumerate(windows[imock]):
-            windows[imock][idx_window] = WindowMatrix(value=window, theory=theory, observable=observables[idx_window])
+        spectra = [
+            spectrum.T
+            for spectrum in get_window(
+                *mock_survey_args,
+                fiducial_theory=theory,
+                injected_theory=spikes,
+                seed=seed,
+                mock_surveys=mock_survey,
+                batch_size=batch_size,
+                **mock_survey_kwargs,
+            )
+        ]
+        for idx_spectrum, spectrum in enumerate(spectra):
+            windows[imock][idx_spectrum] = WindowMatrix(value=np.asarray(spectrum), theory=theory, observable=observables[idx_spectrum])
             if (tmpdir is not None) and jax.process_index() == 0:
-                windows[imock][idx_window].write(tmpdir / survey_names[idx_window] / f"{seeds[imock]:010d}.h5")
+                windows[imock][idx_spectrum].write(tmpdir / survey_names[idx_spectrum] / f"{seeds[imock]:010d}.h5")
     window = [
         WindowMatrix(value=np.mean([window[idx_survey].value() for window in windows], axis=0), theory=theory, observable=observables[idx_survey])
         for idx_survey in range(len(observables))
@@ -235,7 +235,7 @@ def get_windows_spikes(
     mock_surveys_args = mock_surveys_args or ()
     mock_surveys_kwargs = mock_surveys_kwargs or {}
     static_argnames = static_argnames or []
-    static_argnames = [*static_argnames, "mock_surveys"]
+    static_argnames = [*static_argnames, "batch_size", "mock_surveys"]
     if tmpdir is not None:
         tmpdir = Path(tmpdir)
 
@@ -262,32 +262,26 @@ def get_windows_spikes(
     # Initialize a list of windows to fill later
     windows = [[None for j in range(nsurveys)] for i in range(nreal)]
 
-    # Given batch size, how many loops do we run?
-    nsplits = (theory.size + batch_size - 1) // batch_size
+    n = theory_zeros.size
+    spikes = jnp.eye(n, dtype=theory_zeros.dtype).reshape((n, *theory_zeros.shape))
+
     for imock in tqdm(range(nreal), desc="Realization", disable=(jax.process_index() != 0)):
         seed = jax.random.key(seeds[imock])
-        for isplit in tqdm(range(nsplits), desc=f"Iterations (realization {imock})", disable=(jax.process_index() != 0)):
-            islice = isplit * theory_zeros.size // nsplits, (isplit + 1) * theory_zeros.size // nsplits
-            spikes = jnp.array([theory_zeros.at[ii].set(1.0) for ii in range(*islice)])
-            spectra = [
-                wd.T
-                for wd in get_windows(
-                    *mock_surveys_args,
-                    fiducial_theory=theory,
-                    injected_theory=spikes,
-                    seed=seed,
-                    mock_surveys=mock_surveys,
-                    **mock_surveys_kwargs,
-                )
-            ]
-            for isurvey in range(nsurveys):
-                if windows[imock][isurvey] is None:
-                    windows[imock][isurvey] = np.zeros((spectra[isurvey].shape[0], theory.size))
-                windows[imock][isurvey][..., slice(*islice)] = spectra[isurvey]
+        spectra = [
+            wd.T
+            for wd in get_windows(
+                *mock_surveys_args,
+                fiducial_theory=theory,
+                injected_theory=spikes,
+                seed=seed,
+                mock_surveys=mock_surveys,
+                batch_size=batch_size,
+                **mock_surveys_kwargs,
+            )
+        ]
         for isurvey in range(nsurveys):
-            windows[imock][isurvey] = WindowMatrix(value=windows[imock][isurvey], theory=theory, observable=observable)
-        if (tmpdir is not None) and jax.process_index() == 0:
-            for isurvey in range(nsurveys):
+            windows[imock][isurvey] = WindowMatrix(value=np.asarray(spectra[isurvey]), theory=theory, observable=observable)
+            if (tmpdir is not None) and jax.process_index() == 0:
                 windows[imock][isurvey].write(tmpdir / survey_names[isurvey] / f"{seeds[imock]:010d}.h5")
     windows_avg = [
         WindowMatrix(value=np.mean([windows[imock][isurvey].value() for imock in range(nreal)], axis=0), theory=theory, observable=observable)
@@ -296,7 +290,7 @@ def get_windows_spikes(
     return windows_avg, windows
 
 
-def get_windows_component(*mock_surveys_args, injected_theory, fiducial_theory, seed, mock_surveys, **mock_surveys_kw):
+def get_windows_component(*mock_surveys_args, injected_theory, fiducial_theory, seed, mock_surveys, batch_size=None, **mock_surveys_kw):
     """By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value."""
 
     # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles
@@ -311,4 +305,4 @@ def get_windows_component(*mock_surveys_args, injected_theory, fiducial_theory, 
         return jax.jvp(get_responses, primals=(jnp.concatenate(fiducial_theory.value(concatenate=False)),), tangents=(s,))[1]
         # return get_responses(jnp.concatenate(fiducial_theory.value(concatenate=False)) * s)
 
-    return jax.vmap(derivative)(injected_theory)
+    return jax.lax.map(derivative, injected_theory, batch_size=batch_size)
