@@ -757,8 +757,8 @@ def _read_data(
     return fkp_field
 
 
-def _get_pk(*fkp_fields, fkp_norm, binner, los):
-    num_shotnoise = compute_fkp2_shotnoise(*fkp_fields, bin=binner)
+def _get_pk(*fkp_fields, fkp_norm, binner, los, fields=None):
+    num_shotnoise = compute_fkp2_shotnoise(*fkp_fields, bin=binner, fields=fields)
     fkp_meshs = [fkp_field.paint(resampler="tsc", interlacing=3, compensate=True, out="real") for fkp_field in fkp_fields]
     del fkp_fields
     pk = compute_mesh2_spectrum(*fkp_meshs, bin=binner, los={"local": "firstpoint"}.get(los, los))
@@ -768,9 +768,9 @@ def _get_pk(*fkp_fields, fkp_norm, binner, los):
     )
 
 
-def _get_pk_nogic(*fkp_fields, alphas, fkp_norm, binner, los):
+def _get_pk_nogic(*fkp_fields, alphas, fkp_norm, binner, los, fields=None):
     particles = [(fkp_field.data - alpha * fkp_field.randoms).clone(attrs=fkp_field.data.attrs) for fkp_field, alpha in zip(fkp_fields, alphas, strict=True)]
-    num_shotnoise = compute_fkp2_shotnoise(*particles, bin=binner)
+    num_shotnoise = compute_fkp2_shotnoise(*particles, bin=binner, fields=fields)
     fkp_meshs = [
         fkp_field.data.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
         - alpha * fkp_field.randoms.paint(resampler="tsc", interlacing=3, compensate=True, out="real")
@@ -834,6 +834,8 @@ def mock_survey_catalog(
     randoms_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
     # Mesh generation
     meshattrs: MeshAttrs | None = None,
+    # Field identifiers for the analytic shot noise
+    fields: tuple[int, int] | None = None,
 ) -> list[Mesh2SpectrumPoles]:
     """
     Get the power spectrum of a mock survey given an input theory, a seed and a set of observational effects.
@@ -870,6 +872,15 @@ def mock_survey_catalog(
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``randoms_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     meshattrs: MeshAttrs | None = None,
         If not None, one mock mesh will be generated with these attributes instead of one mock mesh per FKP field with the FKP field's attributes. This mesh should cover all particles in all FKP fields. Default is None.
+    fields : tuple[int, int] | None, optional
+        Forwarded to :func:`jaxpower.compute_fkp2_shotnoise` for each cross-correlation pair passed in ``fkp_fields``.
+        By default ``None``, i.e. jaxpower's default field-identifier inference, which treats the two elements of a
+        pair as physically different, independent fields (giving zero cross shot noise) -- correct for a genuine
+        cross-tracer correlation (e.g. LRGxELG). Pass ``(0, 0)`` when the pair instead represents the SAME
+        underlying particles weighted differently, as with OQE weight variants of a single tracer (e.g.
+        ``estimator_weights=("weight_optimal_1", "weight_optimal_2")`` applied to one tracer's field duplicated for
+        the cross term): without this, the analytic shot noise for that pair is silently 0, since jaxpower has no
+        other way to know the two fields share positions.
 
     Returns
     -------
@@ -1101,10 +1112,10 @@ def mock_survey_catalog(
 
     fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
     if gic:
-        pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
+        pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los, fields=fields) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
     else:
         pks = [
-            _get_pk_nogic(*fkp_field, alphas=alpha_gic, fkp_norm=fkp_norm, binner=binner, los=los)
+            _get_pk_nogic(*fkp_field, alphas=alpha_gic, fkp_norm=fkp_norm, binner=binner, los=los, fields=fields)
             for fkp_field, alpha_gic, fkp_norm in zip(fkp_fields, alphas_gic, fkp_norms, strict=True)
         ]
     return pks
@@ -1129,6 +1140,8 @@ def mock_whitenoise(
     # For region renormalization (need to be concatenated if multiple catalogs)
     data_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
     randoms_regions: jax.Array | tuple[jax.Array, jax.Array] | None = None,
+    # Field identifiers for the analytic shot noise
+    fields: tuple[int, int] | None = None,
 ) -> list[Mesh2SpectrumPoles]:
     """
     Get the "windowed" power specturm of an input shot noise given a seed and a set of observational effects.
@@ -1161,6 +1174,15 @@ def mock_whitenoise(
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``data_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     randoms_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``randoms_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
+    fields : tuple[int, int] | None, optional
+        Forwarded to :func:`jaxpower.compute_fkp2_shotnoise` for each cross-correlation pair passed in ``fkp_fields``.
+        By default ``None``, i.e. jaxpower's default field-identifier inference, which treats the two elements of a
+        pair as physically different, independent fields (giving zero cross shot noise) -- correct for a genuine
+        cross-tracer correlation (e.g. LRGxELG). Pass ``(0, 0)`` when the pair instead represents the SAME
+        underlying particles weighted differently, as with OQE weight variants of a single tracer (e.g.
+        ``estimator_weights=("weight_optimal_1", "weight_optimal_2")`` applied to one tracer's field duplicated for
+        the cross term): without this, the analytic shot noise for that pair is silently 0, since jaxpower has no
+        other way to know the two fields share positions.
 
     Returns
     -------
@@ -1403,10 +1425,10 @@ def mock_whitenoise(
 
     fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
     if gic:
-        pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
+        pks = [_get_pk(*fkp_field, fkp_norm=fkp_norm, binner=binner, los=los, fields=fields) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)]
     else:
         pks = [
-            _get_pk_nogic(*fkp_field, alphas=alpha_gic, fkp_norm=fkp_norm, binner=binner, los=los)
+            _get_pk_nogic(*fkp_field, alphas=alpha_gic, fkp_norm=fkp_norm, binner=binner, los=los, fields=fields)
             for fkp_field, alpha_gic, fkp_norm in zip(fkp_fields, alphas_gic, fkp_norms, strict=True)
         ]
     return pks
