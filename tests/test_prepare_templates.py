@@ -62,7 +62,7 @@ def test_data_and_randoms_digitized_identically():
 
 @pytest.mark.parametrize("which", ["data", "randoms"])
 def test_constant_row_values(which):
-    """Row 0 is ``n_bins - 1 + ireg * (n_bins + 2)`` for non-extreme objects, 0 for extreme ones, ``n_bins - 1`` outside regions."""
+    """Row 0 is ``n_bins - 1 + ireg * (n_bins + 2)`` for non-extreme objects, 0 for extreme ones and for objects in no region."""
     rng = np.random.default_rng(1)
     n, n_outside, tail = 10000, 300, 1.0
     randoms_templates = rng.normal(size=(n, 3))
@@ -71,7 +71,7 @@ def test_constant_row_values(which):
     dn, dd, rn, rd = run_prepare(data_templates, randoms_templates, regions, regions, tail=tail)
     templates, digitized = (data_templates, dd) if which == "data" else (randoms_templates, rd)
 
-    expected = np.full(n, N_BINS - 1)
+    expected = np.zeros(n, dtype=int)
     for ireg, sel in enumerate(regions):
         lower, upper = expected_tails(randoms_templates, sel, tail)
         non_extreme = np.all((templates >= lower) & (templates <= upper), axis=1)
@@ -79,6 +79,31 @@ def test_constant_row_values(which):
         expected[sel] = np.where(non_extreme[sel], N_BINS - 1 + ireg * OFFSET, 0)
     np.testing.assert_array_equal(digitized[0], expected)
 
+
+
+def test_objects_in_no_region_are_discarded():
+    """Objects in no region are in (discarded) bin 0 for every row, including the constant one."""
+    rng = np.random.default_rng(5)
+    n, n_outside = 6000, 500
+    templates = rng.normal(size=(n, 3))
+    regions = make_regions(n, n_outside=n_outside)
+    dn, dd, rn, rd = run_prepare(templates, templates, regions, regions)
+    np.testing.assert_array_equal(dd[:, -n_outside:], 0)
+    np.testing.assert_array_equal(rd[:, -n_outside:], 0)
+
+
+def test_constant_row_overlapping_regions():
+    """For objects in several regions, row 0 follows the last region (like the other rows) instead of accumulating offsets."""
+    rng = np.random.default_rng(6)
+    n = 6000
+    templates = rng.normal(size=(n, 3))
+    idx = np.arange(n)
+    regions = [idx < n // 3, idx >= n // 3, idx >= 2 * n // 3]  # region 2 overlaps region 1
+    dn, dd, rn, rd = run_prepare(templates, templates, regions, regions, tail=0.0)  # tail=0: no extreme randoms
+    both = regions[1] & regions[2]
+    np.testing.assert_array_equal(rd[0, both], N_BINS - 1 + 2 * OFFSET)
+    np.testing.assert_array_equal(rd[0, regions[1] & ~both], N_BINS - 1 + OFFSET)
+    assert np.all(rd[1:, both] // OFFSET == 2)
 
 # ---------------------------------------------------------------------------
 # Bug 2: correction for objects on the upper bin edge
@@ -213,3 +238,32 @@ def test_injected_systematic_is_removed(amr_setup):
         assert np.isclose(slope_before, amplitude, rtol=0.05)
         assert abs(slope_after) < 0.025
     assert np.isclose(corrected.mean(), 1.0, atol=1e-2)
+
+
+def test_objects_in_no_region_do_not_affect_fit():
+    """Adding objects in no region leaves the weights of in-region objects unchanged, and gives weight 1 to the others."""
+    rng = np.random.default_rng(7)
+    nd, nr, nd_out, nr_out = 40000, 160000, 4000, 30000
+    randoms_templates = rng.normal(size=(nr + nr_out, 2))
+    data_templates = rng.normal(size=(nd + nd_out, 2))
+    data_weights = 1 + data_templates @ np.array([0.15, -0.1])
+    randoms_weights = np.ones(nr + nr_out)
+
+    def weights(n_d, n_r):
+        # the first n_d / n_r objects are split in two regions, the rest is in no region
+        data_regions, randoms_regions = make_regions(n_d, n_outside=n_d - nd), make_regions(n_r, n_outside=n_r - nr)
+        dn, dd, rn, rd = run_prepare(data_templates[:n_d], randoms_templates[:n_r], data_regions, randoms_regions)
+        setup = dict(
+            data_weights=data_weights[:n_d],
+            randoms_weights=randoms_weights[:n_r],
+            data_regions=np.stack(data_regions),
+            randoms_regions=np.stack(randoms_regions),
+            dn=dn,
+            rn=rn,
+        )
+        return amr_weights(setup, dd, rd)
+
+    weights_without = weights(nd, nr)
+    weights_with = weights(nd + nd_out, nr + nr_out)
+    np.testing.assert_allclose(weights_with[:nd], weights_without, rtol=1e-12)
+    np.testing.assert_array_equal(weights_with[nd:], 1.0)
