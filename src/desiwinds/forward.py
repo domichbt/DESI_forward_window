@@ -366,7 +366,7 @@ def prepare_AMR(
     if real_data_no_region.any():
         warn(f"Some ({real_data_no_region.sum()}/{(1 - data_is_fake).sum()}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
     if real_random_no_region.any():
-        warn(f"Some ({(randoms_coverage == 0).sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
+        warn(f"Some ({real_random_no_region.sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     data_isort = local_argsort(data_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
     randoms_isort = local_argsort(randoms_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
