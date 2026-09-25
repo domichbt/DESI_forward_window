@@ -467,15 +467,21 @@ def prepare_templates(
     Notes
     -----
     This function correctly carries along sharding if input is sharded along the catalog (i.e. n_d/n_r size) axis and sharding_mesh is set accordingly.
+    The extremal values are computed over the full randoms catalog, outside of the ``shard_map``, so the result does not depend on the number of shards.
     """
-    args = data_templates, randoms_templates, data_regions, randoms_regions, randoms_is_real, tail, n_bins, bin_margin
+    regions_lower_tails, regions_upper_tails = [], []
+    for rand_sel in randoms_regions:
+        nanfakes = jnp.where((randoms_is_real & rand_sel)[:, None], randoms_templates, jnp.nan)
+        regions_lower_tails.append(jnp.nanpercentile(nanfakes, tail / 2, axis=0, method="higher"))
+        regions_upper_tails.append(jnp.nanpercentile(nanfakes, 100 - tail / 2, axis=0, method="lower"))
+    args = data_templates, randoms_templates, data_regions, randoms_regions, regions_lower_tails, regions_upper_tails, n_bins, bin_margin
     if (sharding_mesh is None) or sharding_mesh.empty:
         return _prepare_templates(*args)
     else:
         ax = sharding_mesh.axis_names
         return shard_map(
             _prepare_templates,
-            in_specs=(P(ax, None), P(ax, None), [P(ax)] * len(data_regions), [P(ax)] * len(randoms_regions), P(ax), None, None, None),
+            in_specs=(P(ax, None), P(ax, None), [P(ax)] * len(data_regions), [P(ax)] * len(randoms_regions), [P()] * len(regions_lower_tails), [P()] * len(regions_upper_tails), None, None),
             out_specs=(P(None, ax),) * 4,
             mesh=sharding_mesh,
         )(*args)
@@ -486,8 +492,8 @@ def _prepare_templates(
     randoms_templates: jax.Array,
     data_regions: list[jax.Array],
     randoms_regions: list[jax.Array],
-    randoms_is_real: jax.Array,
-    tail: float,
+    regions_lower_tails: list[jax.Array],
+    regions_upper_tails: list[jax.Array],
     n_bins: int,
     bin_margin: float,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
@@ -501,10 +507,7 @@ def _prepare_templates(
     data_templates_digitized = jnp.zeros(shape=(n_sys + 1, n_dat), dtype=int).at[0].set(n_bins - 1)
     rand_templates_digitized = jnp.zeros(shape=(n_sys + 1, n_ran), dtype=int).at[0].set(n_bins - 1)
 
-    for ireg, (data_sel, rand_sel) in enumerate(zip(data_regions, randoms_regions, strict=True)):
-        nanfakes = jnp.where((randoms_is_real & rand_sel)[:, None], randoms_templates, jnp.nan)
-        lower_tails = jnp.nanpercentile(nanfakes, tail / 2, axis=0, method="higher")
-        upper_tails = jnp.nanpercentile(nanfakes, 100 - tail / 2, axis=0, method="lower")
+    for ireg, (data_sel, rand_sel, lower_tails, upper_tails) in enumerate(zip(data_regions, randoms_regions, regions_lower_tails, regions_upper_tails, strict=True)):
         bin_edges = jnp.linspace(start=lower_tails - bin_margin, stop=upper_tails + bin_margin, num=n_bins + 1)
 
         non_extreme_data = jnp.all((data_templates >= lower_tails) & (data_templates <= upper_tails), axis=1)
