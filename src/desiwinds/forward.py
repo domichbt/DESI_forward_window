@@ -1199,6 +1199,7 @@ def mock_whitenoise(
         * NAM is not necessary but should be applied like AMR if needed.
         * The data to randoms renormalization is done to NGC and SGC together. Arguments ``data_regions`` and ``randoms_regions`` from ``ric_args`` are suitable.
     * Most of the time, it is preferable to apply RIC, AMR and NAM to the randoms; this is especially true when this function is used to generate window matrices.
+    * Using the same seed guarantees reproducibility for a given number and ordering of devices only.
 
     Examples
     --------
