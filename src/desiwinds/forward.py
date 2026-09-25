@@ -424,9 +424,9 @@ def apply_AMR(
     randoms_regions : jax.Array
         Input masks for each region for the data, shape (r, n_r,).
     data_templates_digitized : jax.Array
-        Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ``n_bins - 1`` for the constant term.
+        Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line is the constant term: ``n_bins - 1 + ireg * (n_bins + 2)``, 0 for extreme objects.
     randoms_templates_digitized : jax.Array
-        Digitized values of the templates for the randoms, shape (n_sys + 1, n_r). First line should be all ``n_bins - 1`` for the constant term.
+        Digitized values of the templates for the randoms, shape (n_sys + 1, n_r). First line is the constant term: ``n_bins - 1 + ireg * (n_bins + 2)``, 0 for extreme objects.
     data_templates_normalized : jax.Array | None
         Normalized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ones for the constant term. This only needs to be provided if ``apply_to`` is set to ``"data"``.
     randoms_templates_normalized : jax.Array
