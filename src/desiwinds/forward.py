@@ -366,7 +366,7 @@ def prepare_AMR(
     if real_data_no_region.any():
         warn(f"Some ({real_data_no_region.sum()}/{(1 - data_is_fake).sum()}) data particles are in no region at all.", RuntimeWarning, stacklevel=2)
     if real_random_no_region.any():
-        warn(f"Some ({(randoms_coverage == 0).sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
+        warn(f"Some ({real_random_no_region.sum()}/{(1 - randoms_is_fake).sum()}) randoms particles are in no region at all.", RuntimeWarning, stacklevel=2)
 
     data_isort = local_argsort(data_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
     randoms_isort = local_argsort(randoms_templates_digitized, axis=1, sharding_mesh=sharding_mesh)
@@ -424,9 +424,9 @@ def apply_AMR(
     randoms_regions : jax.Array
         Input masks for each region for the data, shape (r, n_r,).
     data_templates_digitized : jax.Array
-        Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ``n_bins - 1`` for the constant term.
+        Digitized values of the templates for the data, shape (n_sys + 1, n_d). First line is the constant term: ``n_bins - 1 + ireg * (n_bins + 2)``, 0 for extreme objects and objects in no region.
     randoms_templates_digitized : jax.Array
-        Digitized values of the templates for the randoms, shape (n_sys + 1, n_r). First line should be all ``n_bins - 1`` for the constant term.
+        Digitized values of the templates for the randoms, shape (n_sys + 1, n_r). First line is the constant term: ``n_bins - 1 + ireg * (n_bins + 2)``, 0 for extreme objects and objects in no region.
     data_templates_normalized : jax.Array | None
         Normalized values of the templates for the data, shape (n_sys + 1, n_d). First line should be all ones for the constant term. This only needs to be provided if ``apply_to`` is set to ``"data"``.
     randoms_templates_normalized : jax.Array
@@ -1199,6 +1199,7 @@ def mock_whitenoise(
         * NAM is not necessary but should be applied like AMR if needed.
         * The data to randoms renormalization is done to NGC and SGC together. Arguments ``data_regions`` and ``randoms_regions`` from ``ric_args`` are suitable.
     * Most of the time, it is preferable to apply RIC, AMR and NAM to the randoms; this is especially true when this function is used to generate window matrices.
+    * Using the same seed guarantees reproducibility for a given number and ordering of devices only.
 
     Examples
     --------
