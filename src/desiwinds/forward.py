@@ -724,6 +724,156 @@ def apply_NAM(
     return nam_weights.sum(axis=range(nam_weights.ndim - 1)) + jnp.invert(randoms_regions.any(axis=0))  # sum over regions and add 1 where no region
 
 
+def _apply_effects(
+    data_weights: list[jax.Array],
+    randoms_weights: list[jax.Array],
+    *,
+    ric_args: tuple,
+    amr_args: tuple,
+    nam_args: tuple,
+    data_regions: tuple,
+    randoms_regions: tuple,
+) -> tuple[list[jax.Array], list[jax.Array]]:
+    """
+    Apply RIC, AMR (followed by RIC again) and NAM, then the per-region data to randoms renormalization, to concatenated weights.
+
+    This is the fiducial procedure that is reused in forward model calls (:py:func:`mock_survey_catalog`, :py:func:`mock_whitenoise`).
+
+    Parameters
+    ----------
+    data_weights : list[jax.Array]
+        Data weights, concatenated over the regions; one entry per tracer (length 1 for auto, 2 for cross).
+    randoms_weights : list[jax.Array]
+        Randoms weights, same layout as ``data_weights``.
+    ric_args, amr_args, nam_args : tuple
+        Tuples (possibly empty) of precomputed effect arguments, one per tracer.
+    data_regions, randoms_regions : tuple
+        Tuples (possibly empty) of region masks for the renormalization, one per tracer.
+
+    Returns
+    -------
+    tuple[list[jax.Array], list[jax.Array]]
+        Updated data and randoms weights.
+    """
+    data_weights, randoms_weights = list(data_weights), list(randoms_weights)
+    for idx, ric_arg in enumerate(ric_args):
+        # if ric_args was set to None in call, ric_args is now an empty tuple, so the loop will be skipped
+        ric_weight = apply_RIC(
+            data_weights=data_weights[idx],
+            randoms_weights=randoms_weights[idx],
+            data_regions=ric_arg.data_regions,
+            randoms_regions=ric_arg.randoms_regions,
+            data_distances_digitized=ric_arg.data_distances_digitized,
+            randoms_distances_digitized=ric_arg.randoms_distances_digitized,
+            n_bins=ric_arg.n_bins,
+            apply_to=ric_arg.apply_to,
+        )
+        if ric_arg.apply_to == "data":
+            data_weights[idx] = data_weights[idx] * ric_weight
+        else:
+            randoms_weights[idx] = randoms_weights[idx] * ric_weight
+
+    for idx, amr_arg in enumerate(amr_args):
+        amr_weights = apply_AMR(
+            data_weights=data_weights[idx],
+            randoms_weights=randoms_weights[idx],
+            data_regions=amr_arg.data_regions,
+            randoms_regions=amr_arg.randoms_regions,
+            data_templates_digitized=amr_arg.data_templates_digitized,
+            randoms_templates_digitized=amr_arg.randoms_templates_digitized,
+            data_templates_normalized=amr_arg.data_templates_normalized,
+            randoms_templates_normalized=amr_arg.randoms_templates_normalized,
+            data_isort=amr_arg.data_isort,
+            randoms_isort=amr_arg.randoms_isort,
+            n_bins=amr_arg.n_bins,
+            apply_to=amr_arg.apply_to,
+        )
+        if amr_arg.apply_to == "data":
+            data_weights[idx] = data_weights[idx] * amr_weights
+        else:
+            randoms_weights[idx] = randoms_weights[idx] * amr_weights
+        # Need to re-enforce RIC after AMR. Corresponds to adding w_sys to randoms by joining on TARGETID_DATA in the DESI pipeline
+        if ric_args:
+            ric_weights = apply_RIC(
+                data_weights=data_weights[idx],
+                randoms_weights=randoms_weights[idx],
+                data_regions=ric_args[idx].data_regions,
+                randoms_regions=ric_args[idx].randoms_regions,
+                data_distances_digitized=ric_args[idx].data_distances_digitized,
+                randoms_distances_digitized=ric_args[idx].randoms_distances_digitized,
+                n_bins=ric_args[idx].n_bins,
+                apply_to=ric_args[idx].apply_to,
+            )
+            if ric_args[idx].apply_to == "data":
+                data_weights[idx] = data_weights[idx] * ric_weights
+            else:
+                randoms_weights[idx] = randoms_weights[idx] * ric_weights
+
+    for idx, nam_arg in enumerate(nam_args):
+        nam_weights = apply_NAM(
+            data_weights=data_weights[idx],
+            randoms_weights=randoms_weights[idx],
+            data_regions=nam_arg.data_regions,
+            randoms_regions=nam_arg.randoms_regions,
+            data_pixels=nam_arg.data_pixels,
+            randoms_pixels=nam_arg.randoms_pixels,
+            invsigma2=nam_arg.invsigma2,
+            nside=nam_arg.nside,
+            apply_to=nam_arg.apply_to,
+        )
+        if nam_arg.apply_to == "data":
+            data_weights[idx] = data_weights[idx] * nam_weights
+        else:
+            randoms_weights[idx] = randoms_weights[idx] * nam_weights
+
+    # global randoms renormalization per region
+    for idx, (_randoms_regions, _data_regions) in enumerate(zip(randoms_regions, data_regions, strict=True)):
+        global_alpha = data_weights[idx].sum() / randoms_weights[idx].sum()
+        alphas = (data_weights[idx] * _data_regions).sum(axis=-1) / (randoms_weights[idx] * _randoms_regions).sum(axis=-1)
+        correction = (_randoms_regions * alphas[..., None] / global_alpha).sum(axis=0) + jnp.invert(
+            _randoms_regions.any(axis=0)
+        )  # apply alpha/global_alpha inside regions, 1 outside
+        randoms_weights[idx] = randoms_weights[idx] * correction
+    return data_weights, randoms_weights
+
+
+def _split_weights(data_weights, randoms_weights, fkp_fields, sharding_mesh):
+    """Split concatenated weights back into per-FKP field tuples, with the same nesting as ``fkp_fields``."""
+    split_indices_data = tuple(
+        list(itertools.accumulate([fkp_field.data.weights.shape[0] for fkp_field in region_group]))[:-1]
+        for region_group in zip(
+            *fkp_fields,
+            strict=True,
+        )
+    )
+    data_weights = tuple(
+        zip(
+            *(
+                local_split(data_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
+                for data_weight, split_idx in zip(data_weights, split_indices_data, strict=True)
+            ),
+            strict=True,
+        )
+    )
+    split_indices_randoms = tuple(
+        list(itertools.accumulate([fkp_field.randoms.weights.shape[0] for fkp_field in region_group]))[:-1]
+        for region_group in zip(
+            *fkp_fields,
+            strict=True,
+        )
+    )
+    randoms_weights = tuple(
+        zip(
+            *(
+                local_split(randoms_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
+                for randoms_weight, split_idx in zip(randoms_weights, split_indices_randoms, strict=True)
+            ),
+            strict=True,
+        )
+    )
+    return data_weights, randoms_weights
+
+
 def _read_mesh_to_fkp(
     fkp_field: FKPField | tuple[FKPField, ...],
     mesh: RealMeshField,
@@ -996,119 +1146,16 @@ def mock_survey_catalog(
         for region_group in zip(*fkp_fields, strict=True)
     ]
 
-    for idx, ric_arg in enumerate(ric_args):
-        # if ric_args was set to None in call, ric_args is now an empty tuple, so the loop will be skipped
-        ric_weight = apply_RIC(
-            data_weights=data_weights[idx],
-            randoms_weights=randoms_weights[idx],
-            data_regions=ric_arg.data_regions,
-            randoms_regions=ric_arg.randoms_regions,
-            data_distances_digitized=ric_arg.data_distances_digitized,
-            randoms_distances_digitized=ric_arg.randoms_distances_digitized,
-            n_bins=ric_arg.n_bins,
-            apply_to=ric_arg.apply_to,
-        )
-        if ric_arg.apply_to == "data":
-            data_weights[idx] = data_weights[idx] * ric_weight
-        else:
-            randoms_weights[idx] = randoms_weights[idx] * ric_weight
-
-    for idx, amr_arg in enumerate(amr_args):
-        amr_weights = apply_AMR(
-            data_weights=data_weights[idx],
-            randoms_weights=randoms_weights[idx],
-            data_regions=amr_arg.data_regions,
-            randoms_regions=amr_arg.randoms_regions,
-            data_templates_digitized=amr_arg.data_templates_digitized,
-            randoms_templates_digitized=amr_arg.randoms_templates_digitized,
-            data_templates_normalized=amr_arg.data_templates_normalized,
-            randoms_templates_normalized=amr_arg.randoms_templates_normalized,
-            data_isort=amr_arg.data_isort,
-            randoms_isort=amr_arg.randoms_isort,
-            n_bins=amr_arg.n_bins,
-            apply_to=amr_arg.apply_to,
-        )
-        if amr_arg.apply_to == "data":
-            data_weights[idx] = data_weights[idx] * amr_weights
-        else:
-            randoms_weights[idx] = randoms_weights[idx] * amr_weights
-        # Need to re-enforce RIC after AMR. Corresponds to adding w_sys to randoms by joining on TARGETID_DATA in the DESI pipeline
-        if ric_args:
-            ric_weights = apply_RIC(
-                data_weights=data_weights[idx],
-                randoms_weights=randoms_weights[idx],
-                data_regions=ric_args[idx].data_regions,
-                randoms_regions=ric_args[idx].randoms_regions,
-                data_distances_digitized=ric_args[idx].data_distances_digitized,
-                randoms_distances_digitized=ric_args[idx].randoms_distances_digitized,
-                n_bins=ric_args[idx].n_bins,
-                apply_to=ric_args[idx].apply_to,
-            )
-            if ric_args[idx].apply_to == "data":
-                data_weights[idx] = data_weights[idx] * ric_weights
-            else:
-                randoms_weights[idx] = randoms_weights[idx] * ric_weights
-
-    for idx, nam_arg in enumerate(nam_args):
-        nam_weights = apply_NAM(
-            data_weights=data_weights[idx],
-            randoms_weights=randoms_weights[idx],
-            data_regions=nam_arg.data_regions,
-            randoms_regions=nam_arg.randoms_regions,
-            data_pixels=nam_arg.data_pixels,
-            randoms_pixels=nam_arg.randoms_pixels,
-            invsigma2=nam_arg.invsigma2,
-            nside=nam_arg.nside,
-            apply_to=nam_arg.apply_to,
-        )
-        if nam_arg.apply_to == "data":
-            data_weights[idx] = data_weights[idx] * nam_weights
-        else:
-            randoms_weights[idx] = randoms_weights[idx] * nam_weights
-
-    # global randoms renormalization per region
-    for idx, (_randoms_regions, _data_regions) in enumerate(zip(randoms_regions, data_regions, strict=True)):
-        global_alpha = data_weights[idx].sum() / randoms_weights[idx].sum()
-        alphas = (data_weights[idx] * _data_regions).sum(axis=-1) / (randoms_weights[idx] * _randoms_regions).sum(axis=-1)
-        correction = (_randoms_regions * alphas[..., None] / global_alpha).sum(axis=0) + jnp.invert(
-            _randoms_regions.any(axis=0)
-        )  # apply alpha/global_alpha inside regions, 1 outside
-        randoms_weights[idx] = randoms_weights[idx] * correction
-
-    # Rebuild FKP fields
-    # Split back the weights
-    split_indices_data = tuple(
-        list(itertools.accumulate([fkp_field.data.weights.shape[0] for fkp_field in region_group]))[:-1]
-        for region_group in zip(
-            *fkp_fields,
-            strict=True,
-        )
+    data_weights, randoms_weights = _apply_effects(
+        data_weights,
+        randoms_weights,
+        ric_args=ric_args,
+        amr_args=amr_args,
+        nam_args=nam_args,
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
     )
-    data_weights = tuple(
-        zip(
-            *(
-                local_split(data_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
-                for data_weight, split_idx in zip(data_weights, split_indices_data, strict=True)
-            ),
-            strict=True,
-        )
-    )
-    split_indices_randoms = tuple(
-        list(itertools.accumulate([fkp_field.randoms.weights.shape[0] for fkp_field in region_group]))[:-1]
-        for region_group in zip(
-            *fkp_fields,
-            strict=True,
-        )
-    )
-    randoms_weights = tuple(
-        zip(
-            *(
-                local_split(randoms_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
-                for randoms_weight, split_idx in zip(randoms_weights, split_indices_randoms, strict=True)
-            ),
-            strict=True,
-        )
-    )
+    data_weights, randoms_weights = _split_weights(data_weights, randoms_weights, fkp_fields, sharding_mesh=sharding_mesh)
 
     fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
     if gic:
@@ -1310,119 +1357,16 @@ def mock_whitenoise(
             for weights, key, sig in zip(data_weights, keys, sigma, strict=True)
         ]
 
-    for idx, ric_arg in enumerate(ric_args):
-        # if ric_args was set to None in call, ric_args is now an empty tuple, so the loop will be skipped
-        ric_weight = apply_RIC(
-            data_weights=data_weights[idx],
-            randoms_weights=randoms_weights[idx],
-            data_regions=ric_arg.data_regions,
-            randoms_regions=ric_arg.randoms_regions,
-            data_distances_digitized=ric_arg.data_distances_digitized,
-            randoms_distances_digitized=ric_arg.randoms_distances_digitized,
-            n_bins=ric_arg.n_bins,
-            apply_to=ric_arg.apply_to,
-        )
-        if ric_arg.apply_to == "data":
-            data_weights[idx] = data_weights[idx] * ric_weight
-        else:
-            randoms_weights[idx] = randoms_weights[idx] * ric_weight
-
-    for idx, amr_arg in enumerate(amr_args):
-        amr_weights = apply_AMR(
-            data_weights=data_weights[idx],
-            randoms_weights=randoms_weights[idx],
-            data_regions=amr_arg.data_regions,
-            randoms_regions=amr_arg.randoms_regions,
-            data_templates_digitized=amr_arg.data_templates_digitized,
-            randoms_templates_digitized=amr_arg.randoms_templates_digitized,
-            data_templates_normalized=amr_arg.data_templates_normalized,
-            randoms_templates_normalized=amr_arg.randoms_templates_normalized,
-            data_isort=amr_arg.data_isort,
-            randoms_isort=amr_arg.randoms_isort,
-            n_bins=amr_arg.n_bins,
-            apply_to=amr_arg.apply_to,
-        )
-        if amr_arg.apply_to == "data":
-            data_weights[idx] = data_weights[idx] * amr_weights
-        else:
-            randoms_weights[idx] = randoms_weights[idx] * amr_weights
-        # Need to re-enforce RIC after AMR. Corresponds to adding w_sys to randoms by joining on TARGETID_DATA in the DESI pipeline
-        if ric_args:
-            ric_weights = apply_RIC(
-                data_weights=data_weights[idx],
-                randoms_weights=randoms_weights[idx],
-                data_regions=ric_args[idx].data_regions,
-                randoms_regions=ric_args[idx].randoms_regions,
-                data_distances_digitized=ric_args[idx].data_distances_digitized,
-                randoms_distances_digitized=ric_args[idx].randoms_distances_digitized,
-                n_bins=ric_args[idx].n_bins,
-                apply_to=ric_args[idx].apply_to,
-            )
-            if ric_args[idx].apply_to == "data":
-                data_weights[idx] = data_weights[idx] * ric_weights
-            else:
-                randoms_weights[idx] = randoms_weights[idx] * ric_weights
-
-    for idx, nam_arg in enumerate(nam_args):
-        nam_weights = apply_NAM(
-            data_weights=data_weights[idx],
-            randoms_weights=randoms_weights[idx],
-            data_regions=nam_arg.data_regions,
-            randoms_regions=nam_arg.randoms_regions,
-            data_pixels=nam_arg.data_pixels,
-            randoms_pixels=nam_arg.randoms_pixels,
-            invsigma2=nam_arg.invsigma2,
-            nside=nam_arg.nside,
-            apply_to=nam_arg.apply_to,
-        )
-        if nam_arg.apply_to == "data":
-            data_weights[idx] = data_weights[idx] * nam_weights
-        else:
-            randoms_weights[idx] = randoms_weights[idx] * nam_weights
-
-    # global randoms renormalization per region
-    for idx, (_randoms_regions, _data_regions) in enumerate(zip(randoms_regions, data_regions, strict=True)):
-        global_alpha = data_weights[idx].sum() / randoms_weights[idx].sum()
-        alphas = (data_weights[idx] * _data_regions).sum(axis=-1) / (randoms_weights[idx] * _randoms_regions).sum(axis=-1)
-        correction = (_randoms_regions * alphas[..., None] / global_alpha).sum(axis=0) + jnp.invert(
-            _randoms_regions.any(axis=0)
-        )  # apply alpha/global_alpha inside regions, 1 outside
-        randoms_weights[idx] = randoms_weights[idx] * correction
-
-    # Rebuild FKP fields
-    # Split back the weights
-    split_indices_data = tuple(
-        list(itertools.accumulate([fkp_field.data.weights.shape[0] for fkp_field in region_group]))[:-1]
-        for region_group in zip(
-            *fkp_fields,
-            strict=True,
-        )
+    data_weights, randoms_weights = _apply_effects(
+        data_weights,
+        randoms_weights,
+        ric_args=ric_args,
+        amr_args=amr_args,
+        nam_args=nam_args,
+        data_regions=data_regions,
+        randoms_regions=randoms_regions,
     )
-    data_weights = tuple(
-        zip(
-            *(
-                local_split(data_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
-                for data_weight, split_idx in zip(data_weights, split_indices_data, strict=True)
-            ),
-            strict=True,
-        )
-    )
-    split_indices_randoms = tuple(
-        list(itertools.accumulate([fkp_field.randoms.weights.shape[0] for fkp_field in region_group]))[:-1]
-        for region_group in zip(
-            *fkp_fields,
-            strict=True,
-        )
-    )
-    randoms_weights = tuple(
-        zip(
-            *(
-                local_split(randoms_weight, split_idx, axis=0, sharding_mesh=sharding_mesh)
-                for randoms_weight, split_idx in zip(randoms_weights, split_indices_randoms, strict=True)
-            ),
-            strict=True,
-        )
-    )
+    data_weights, randoms_weights = _split_weights(data_weights, randoms_weights, fkp_fields, sharding_mesh=sharding_mesh)
 
     fkp_fields = jax.tree.map(_update_fkp, data_weights, randoms_weights, fkp_fields, _fill_with_constant(data_weights, estimator_weights))
     if gic:
