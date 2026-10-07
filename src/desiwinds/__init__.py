@@ -2,7 +2,7 @@
 
 It works by sampling forward modeled DESI-like surveys on gaussian mocks realizations. Designed to run on GPU and take into account survey geometry, radial integral constraints, angular mode removal from imaging systematics regressions and angular integral constraint (nulled angular modes).
 """
-from . import forward, window
+from . import forward, shotnoise, window
 
 try:
     from . import convenience
