@@ -434,3 +434,195 @@ def test_mock_whitenoise_runs_on_toy(toy):
 def test_cross_correlations_rejected(toy):
     with pytest.raises(NotImplementedError):
         prepare_field_weights((toy.fkp_fields[0], toy.fkp_fields[0]))
+
+
+# ---------------------------------------------------------------------------
+# Two estimator weightings (OQE leg pair)
+# ---------------------------------------------------------------------------
+
+
+def two_leg_kwargs(toy, estimator_weights, effects="gic"):
+    """Like ``kwargs`` with ``estimator_weights`` forwarded to ``prepare_field_weights``."""
+    kw = toy.forward_kwargs(**EFFECTS[effects], estimator_weights=estimator_weights)
+    args = prepare_field_weights(*toy.fkp_fields, gic=EFFECTS[effects].get("gic", True), **{k: v for k, v in kw.items() if k not in ("binner", "fkp_norms")})
+    return {"field_weights_args": args, "binner": toy.binner, "fkp_norms": toy.fkp_norms}
+
+
+def with_second_weights(toy):
+    """The toy with a second estimator weighting, ``weight_B``, on the data and randoms."""
+    rng = np.random.default_rng(11)
+    fkp_fields = tuple(
+        f.clone(
+            data=f.data.clone(extra=f.data.extra | {"weight_B": jnp.asarray(rng.uniform(0.4, 1.6, f.data.size))}),
+            randoms=f.randoms.clone(extra=f.randoms.extra | {"weight_B": jnp.asarray(rng.uniform(0.4, 1.6, f.randoms.size))}),
+        )
+        for f in toy.fkp_fields
+    )
+    from dataclasses import replace
+
+    return replace(toy, fkp_fields=fkp_fields)
+
+
+def test_single_leg_unchanged(toy):
+    """(a) A single string (or None) gives one leg, with the same structure as before."""
+    for name in ("weight_FKP", None):
+        args = prepare_field_weights(*toy.fkp_fields, estimator_weights=name)
+        assert args.n_legs == 1 and args.other_data_estimator_weights is None
+        w = apply_field_weights(args.input_data_weights, args)
+        assert isinstance(w, tuple) and all(hasattr(x, "shape") for x in w)
+        # frozen alpha is the unweighted ratio of the sums, as in mock_whitenoise
+        f = toy.fkp_fields[0]
+        np.testing.assert_array_equal(args.noise_free_data_to_randoms_ratio[0], f.data.weights.sum() / f.randoms.weights.sum())
+    # the quantities of a single-leg run are those of the explicit formula d.w, -alpha r.w
+    args = prepare_field_weights(*toy.fkp_fields, estimator_weights="weight_FKP")
+    f = toy.fkp_fields[0]
+    d, r = f.data.weights * f.data.extra["weight_FKP"], f.randoms.weights * f.randoms.extra["weight_FKP"]
+    np.testing.assert_allclose(apply_field_weights(args.input_data_weights, args)[0], np.concatenate([d, -(d.sum() / r.sum()) * r]), rtol=1e-12)
+
+
+def test_estimator_weights_tuple_validation(toy):
+    with pytest.raises(ValueError):
+        prepare_field_weights(*toy.fkp_fields, estimator_weights=("weight_FKP",) * 3)
+
+
+@pytest.mark.parametrize("effects", ["gic", "ric+amr"])
+@pytest.mark.parametrize("sampler", [sample_shotnoise_template_linearized, sample_shotnoise_template_quadratic])
+def test_two_legs_with_equal_weights_equal_single_leg(toy, effects, sampler):
+    """(b) With w_A == w_B the two-leg run is the single-leg run."""
+    single = sampler(*toy.fkp_fields, key=KEY, n_real=3, compute_control_variate=True, **kwargs(toy, effects))
+    double = sampler(*toy.fkp_fields, key=KEY, n_real=3, compute_control_variate=True, **two_leg_kwargs(toy, ("weight_FKP", "weight_FKP"), effects))
+    for x, y in zip(jax.tree.leaves(single), jax.tree.leaves(double), strict=True):
+        np.testing.assert_allclose(y, x, rtol=1e-9, atol=1e-9 * np.abs(x).max())
+    a1 = sample_shotnoise_template_antithetic(*toy.fkp_fields, key=KEY, n_real=2, sigma=0.5, **kwargs(toy, effects))
+    a2 = sample_shotnoise_template_antithetic(*toy.fkp_fields, key=KEY, n_real=2, sigma=0.5, **two_leg_kwargs(toy, ("weight_FKP", "weight_FKP"), effects))
+    np.testing.assert_allclose(a2["power_spectrum_response"], a1["power_spectrum_response"], rtol=1e-8, atol=1e-8 * np.abs(a1["power_spectrum_response"]).max())
+    np.testing.assert_allclose(a2["shotnoise_response"], a1["shotnoise_response"], rtol=1e-9)
+    # analytic template and measurement
+    for include_gic in (False, True):
+        for x, y in zip(
+            analytic_shotnoise_template(*toy.fkp_fields, **kwargs(toy, "gic"), include_gic=include_gic),
+            analytic_shotnoise_template(*toy.fkp_fields, **two_leg_kwargs(toy, ("weight_FKP", "weight_FKP")), include_gic=include_gic),
+            strict=True,
+        ):
+            np.testing.assert_allclose(y, x, rtol=1e-9, atol=1e-9 * np.abs(x).max())
+    q1, s1 = measure_power_spectrum_and_shotnoise(*toy.fkp_fields, **kwargs(toy, effects))
+    q2, s2 = measure_power_spectrum_and_shotnoise(*toy.fkp_fields, **two_leg_kwargs(toy, ("weight_FKP", "weight_FKP"), effects))
+    np.testing.assert_allclose(q2, q1, rtol=1e-9, atol=1e-9 * np.abs(q1).max())
+    np.testing.assert_allclose(s2, s1, rtol=1e-12)
+
+
+def test_two_none_legs_equal_single_leg_without_gic(toy):
+    """With frozen alpha, two unweighted legs are the single unweighted leg (the frozen alpha of a leg is the ratio of its weighted sums)."""
+    kw = toy.kwargs(gic=False)
+    runs = [
+        sample_shotnoise_template_linearized(
+            *toy.fkp_fields, key=KEY, n_real=3, **kw | {"field_weights_args": prepare_field_weights(*toy.fkp_fields, estimator_weights=weights, gic=False)}
+        )
+        for weights in (None, (None, None))
+    ]
+    np.testing.assert_allclose(runs[1]["power_spectrum_response"], runs[0]["power_spectrum_response"], rtol=1e-9, atol=1e-9)
+
+
+def test_two_legs_structure_and_frozen_alpha(toy):
+    toy_b = with_second_weights(toy)
+    args = prepare_field_weights(*toy_b.fkp_fields, estimator_weights=("weight_FKP", "weight_B"), gic=False)
+    assert args.n_legs == 2
+    w = apply_field_weights(args.input_data_weights, args)
+    assert len(w) == 2 and len(w[0]) == 1
+    f = toy_b.fkp_fields[0]
+    for leg, name in enumerate(("weight_FKP", "weight_B")):
+        d, r = f.data.weights * f.data.extra[name], f.randoms.weights * f.randoms.extra[name]
+        np.testing.assert_allclose(w[leg][0], np.concatenate([d, -(d.sum() / r.sum()) * r]), rtol=1e-12)
+    # the legs are different, and the cross spectrum is symmetric in them
+    assert not np.allclose(w[0][0], w[1][0])
+    _, (spectrum_of, shotnoise_of), _ = parts(toy_b, "gic")
+    np.testing.assert_allclose(spectrum_of(w[0], w[1]), spectrum_of(w[1], w[0]), rtol=1e-10, atol=1e-6)
+
+
+def test_two_legs_control_variate_is_exact_without_effects(tiny):
+    """(c) With no effects the two-leg CV equals the response exactly, so the CV-corrected template is the two-leg analytic one."""
+    tiny_b = with_second_weights(tiny)
+    kw = two_leg_kwargs(tiny_b, ("weight_FKP", "weight_B"))
+    norms = norms_of(kw)
+    res = sample_shotnoise_template_linearized(*tiny_b.fkp_fields, key=KEY, n_real=6, compute_control_variate=True, **kw)
+    np.testing.assert_allclose(res["extras"]["control_variate"][0], res["power_spectrum_response"], rtol=1e-9, atol=1e-6)
+    np.testing.assert_allclose(res["extras"]["control_variate"][1], res["shotnoise_response"], rtol=1e-12)
+    analytic_spectrum_response, analytic_shotnoise_response, analytic = analytic_shotnoise_template(*tiny_b.fkp_fields, **kw, include_gic=True)
+    s, cov, diag = shotnoise_template_with_control_variate(res, norms, analytic_spectrum_response, analytic_shotnoise_response)
+    np.testing.assert_allclose(s, np.asarray(analytic)[0], rtol=1e-8, atol=1e-8)
+    assert np.allclose(np.diag(cov), 0, atol=1e-12)
+    np.testing.assert_allclose(diag["variance_reduction"], 0.0, atol=1e-8)
+    # the two-leg template is not the single-leg one
+    single = analytic_shotnoise_template(*tiny_b.fkp_fields, **two_leg_kwargs(tiny_b, ("weight_FKP", "weight_FKP")), include_gic=True)[2]
+    assert not np.allclose(np.asarray(single), np.asarray(analytic))
+
+
+def test_two_legs_quadratic_curvature_decomposition(toy):
+    toy_b = with_second_weights(toy)
+    kw = two_leg_kwargs(toy_b, ("weight_FKP", "weight_B"), "ric+amr")
+    c = sample_shotnoise_template_quadratic(*toy_b.fkp_fields, key=KEY, n_real=3, **kw)
+    lin_n, lin_d = c["extras"]["linear_part"]
+    cur_n, cur_d = c["extras"]["curvature_part"]
+    np.testing.assert_allclose(c["power_spectrum_response"], lin_n + cur_n, rtol=1e-12, atol=1e-6)
+    np.testing.assert_allclose(c["shotnoise_response"], lin_d + cur_d, rtol=1e-12)
+    assert np.abs(cur_n).max() > 0
+
+
+def test_two_legs_quadratic_matches_antithetic_small_sigma(toy):
+    toy_b = with_second_weights(toy)
+    kw = two_leg_kwargs(toy_b, ("weight_FKP", "weight_B"), "ric+amr")
+    sigma = 1e-3
+    a = sample_shotnoise_template_antithetic(*toy_b.fkp_fields, key=KEY, n_real=2, sigma=sigma, **kw)
+    c = sample_shotnoise_template_quadratic(*toy_b.fkp_fields, key=KEY, n_real=2, **kw)
+    scale = np.abs(c["power_spectrum_response"]).max()
+    np.testing.assert_allclose(a["power_spectrum_response"] / sigma**2, c["power_spectrum_response"], rtol=1e-3, atol=1e-3 * scale)
+    np.testing.assert_allclose(a["shotnoise_response"] / sigma**2, c["shotnoise_response"], rtol=1e-3)
+
+
+def test_two_legs_monte_carlo_matches_analytic(tiny):
+    """(d) The mean of the two-leg GIC-only response is the analytic template, within the jackknife errors (the exact Hadamard expectation also matches)."""
+    tiny_b = with_second_weights(tiny)
+    kw = two_leg_kwargs(tiny_b, ("weight_FKP", "weight_B"))
+    norms = norms_of(kw)
+    analytic_spectrum_response, analytic_shotnoise_response, analytic = analytic_shotnoise_template(*tiny_b.fkp_fields, **kw, include_gic=True)
+    res = sample_shotnoise_template_linearized(*tiny_b.fkp_fields, key=KEY, n_real=256, compute_control_variate=True, **kw)
+    # the response to the GIC-only pipeline is the control variate: compare the mean of its spectrum response to the analytic one, bin by bin
+    cv_spectrum, cv_shotnoise = (np.asarray(x)[:, 0] for x in res["extras"]["control_variate"])
+    mean, error = cv_spectrum.mean(0), cv_spectrum.std(0, ddof=1) / np.sqrt(len(cv_spectrum))
+    low_k = slice(0, mean.shape[-1] // 2)  # the analytic self-pair term neglects mass-assignment aliasing at high k
+    scale = np.abs(np.asarray(analytic_spectrum_response)[0, 0]).max()
+    assert np.all(np.abs(mean - np.asarray(analytic_spectrum_response)[0])[:, low_k] < 5 * error[:, low_k] + 0.05 * scale)
+    assert abs(cv_shotnoise.mean() - float(analytic_shotnoise_response[0])) < 5 * cv_shotnoise.std(ddof=1) / np.sqrt(len(cv_shotnoise))
+    # exact expectation, from a Hadamard set
+    (input_data_weights, phi_u, phi_linear), (spectrum_of, shotnoise_of), _ = parts_from(kw, tiny_b)
+    num, den = [], []
+    for row in hadamard(len(input_data_weights)):
+        v = phi_linear(jnp.asarray(row, dtype=input_data_weights.dtype))
+        num.append(spectrum_of(*v))
+        den.append(shotnoise_of(*v))
+    np.testing.assert_allclose(np.mean(den, axis=0), np.asarray(analytic_shotnoise_response), rtol=1e-10)
+    np.testing.assert_allclose(np.mean(num, axis=0)[0][:, low_k], np.asarray(analytic_spectrum_response)[0][:, low_k], atol=0.05 * scale)
+
+
+def parts_from(kw, toy):
+    args = kw["field_weights_args"]
+    norms = get_estimator_normalizations(kw["fkp_norms"])
+    spectrum_of = partial(bilinear_power_spectrum, particles=get_region_particles(*toy.fkp_fields), binner=kw["binner"], norms=norms)
+    shotnoise_of = partial(conventional_shotnoise, binner=kw["binner"], norms=norms)
+    return (args.input_data_weights, partial(apply_field_weights, field_weights_args=args), partial(field_weights_perturbation_gic_only, field_weights_args=args)), (spectrum_of, shotnoise_of), kw
+
+
+def test_two_legs_under_jit_with_unchanged_static_argnames(toy):
+    """(e) The pipeline runs under jit with the same static arguments; FieldWeightsArgs with two legs is a pytree."""
+    toy_b = with_second_weights(toy)
+    kw = two_leg_kwargs(toy_b, ("weight_FKP", "weight_B"), "ric")
+    leaves, treedef = jax.tree.flatten(kw["field_weights_args"])
+    assert jax.tree.unflatten(treedef, leaves).n_legs == 2
+    assert shotnoise._STATIC_ARGNAMES == ["n_real", "noise_distribution", "compute_control_variate", "batch_size", "los"]
+    for sampler in (sample_shotnoise_template_antithetic, sample_shotnoise_template_linearized, sample_shotnoise_template_quadratic):
+        res = sampler(*toy_b.fkp_fields, key=KEY, n_real=2, compute_control_variate=True, batch_size=2, los="local", **kw)
+        assert res["power_spectrum_response"].shape == (2, 1, 3, kw["binner"].xavg.shape[0])
+        assert res["shotnoise_response"].shape == (2, 1)
+        assert np.all(np.isfinite(res["power_spectrum_response"]))
+    q, s = jax.jit(measure_power_spectrum_and_shotnoise, static_argnames=["los"])(*toy_b.fkp_fields, **kw)
+    assert np.all(np.isfinite(q)) and np.all(np.isfinite(s))

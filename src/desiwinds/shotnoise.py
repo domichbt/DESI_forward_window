@@ -3,7 +3,7 @@ Shot noise of the power spectrum multipoles: white-noise forward model and scale
 
 The shot noise contribution to the measured multipoles is the conventional (constant) shot noise times a dimensionless, scale-dependent template, which is distorted by the observational effects forward-modeled in :py:mod:`desiwinds.forward` (RIC, AMR, NAM, data to randoms renormalization, global integral constraint). The template is sampled by injecting independent noise on the weights of the "data" (a random half of the randoms) and propagating it through the pipeline. Three methods are available, an antithetic noise injection with normalization (:py:func:`sample_shotnoise_template_antithetic`), a linearization by forward-mode differentiation (:py:func:`sample_shotnoise_template_linearized`) and a nested one that keeps the curvature of the pipeline (:py:func:`sample_shotnoise_template_quadratic`); they are assembled by :py:func:`shotnoise_template_from_samples`. An analytic template for the geometry and the global integral constraint, :py:func:`analytic_shotnoise_template`, can serve as control variate.
 
-The measured field is the sum over the objects of their weights times a Dirac delta, with the data first and then the randoms, whose weights absorb the sign and the ratio ``alpha`` of the data to randoms weights. Estimator weights (FKP, OQE...) and the estimator normalization are frozen at their noise-free values, and no shot noise is subtracted. Only auto-correlations of a single tracer are supported; several regions (*e.g.* NGC and SGC) are handled as separate FKP fields, like in :py:func:`desiwinds.forward.mock_survey_catalog`.
+The measured field is the sum over the objects of their weights times a Dirac delta, with the data first and then the randoms, whose weights absorb the sign and the ratio ``alpha`` of the data to randoms weights. Estimator weights (FKP, OQE...) and the estimator normalization are frozen at their noise-free values, and no shot noise is subtracted. Only a single tracer is supported, with one or two estimator weightings (*e.g.* the two legs of an OQE pair): single tracer, one or two estimator weightings; several regions (*e.g.* NGC and SGC) are handled as separate FKP fields, like in :py:func:`desiwinds.forward.mock_survey_catalog`.
 """
 
 import itertools
@@ -318,12 +318,12 @@ def _concat(arrays: list[jax.Array]) -> jax.Array:
 
 
 def _as_single(arg, name):
-    """Normalize an optional per-tracer argument to a tuple of length 0 or 1 (auto-correlation only)."""
+    """Normalize an optional per-tracer argument to a tuple of length 0 or 1 (single tracer)."""
     if arg is None:
         return ()
     if isinstance(arg, tuple):
         if len(arg) != 1:
-            raise NotImplementedError(f"Only auto-correlations are supported: {name} has {len(arg)} entries.")
+            raise NotImplementedError(f"Only a single tracer is supported: {name} has {len(arg)} entries.")
         return arg
     return (arg,)
 
@@ -336,19 +336,25 @@ FieldWeightsArgs = make_jax_dataclass(
         "data_estimator_weights",
         "randoms_estimator_weights",
         "noise_free_data_to_randoms_ratio",
+        "other_data_estimator_weights",
+        "other_randoms_estimator_weights",
+        "other_noise_free_data_to_randoms_ratio",
         "ric_args",
         "amr_args",
         "nam_args",
         "data_regions",
         "randoms_regions",
     ],
-    aux_fields=["n_data_per_region", "n_randoms_per_region", "gic"],
+    aux_fields=["n_data_per_region", "n_randoms_per_region", "gic", "n_legs"],
     types_fields={
         "input_data_weights": jax.Array,
         "input_randoms_weights": jax.Array,
         "data_estimator_weights": jax.Array,
         "randoms_estimator_weights": jax.Array,
         "noise_free_data_to_randoms_ratio": list,
+        "other_data_estimator_weights": jax.Array | None,
+        "other_randoms_estimator_weights": jax.Array | None,
+        "other_noise_free_data_to_randoms_ratio": list | None,
         "ric_args": tuple,
         "amr_args": tuple,
         "nam_args": tuple,
@@ -357,13 +363,14 @@ FieldWeightsArgs = make_jax_dataclass(
         "n_data_per_region": tuple,
         "n_randoms_per_region": tuple,
         "gic": bool,
+        "n_legs": int,
     },
 )
 
 
 def prepare_field_weights(
     *fkp_fields: FKPField,
-    estimator_weights: str | None = None,
+    estimator_weights: str | None | tuple[str | None, str | None] = None,
     ric_args: RIC_args | None = None,
     amr_args: AMR_args | None = None,
     nam_args: NAM_args | None = None,
@@ -378,8 +385,8 @@ def prepare_field_weights(
     ----------
     *fkp_fields : FKPField
         One FKP field per region (*e.g.* NGC and SGC). The "data" must be a random half playing the data (not clustered); its weights are the noise-free input data weights. The data to randoms split and the weights should look like those of the real measurement.
-    estimator_weights : str | None, optional
-        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time (FKP or OQE weights for example). They are frozen at their noise-free values. By default ``None`` (no extra weight).
+    estimator_weights : str | None | tuple[str | None, str | None], optional
+        Name of the weights stored in the FKP fields' particle fields ``extra_fields`` to use as extra weight at estimation time (FKP or OQE weights for example). They are frozen at their noise-free values. By default ``None`` (no extra weight). A pair designates two estimator weightings (*legs*) applied to the same particles, *e.g.* an OQE pair (``W_TILDE``, ``W_ell``): the measured spectrum is then the symmetrized cross spectrum of the two legs, and the global integral constraint (and the frozen data to randoms ratio) is applied per leg, with the sums weighted by the weights of that leg.
     ric_args : RIC_args | None, optional
         Fixed, precomputed arguments for RIC weights computation by :py:func:`desiwinds.forward.apply_RIC`. Obtain with :py:func:`desiwinds.forward.prepare_RIC`. By default ``None``.
     amr_args : AMR_args | None, optional
@@ -400,36 +407,58 @@ def prepare_field_weights(
 
         * ``input_data_weights``: concatenated noise-free input data weights,
         * ``input_randoms_weights``: concatenated input randoms weights,
-        * ``data_estimator_weights``, ``randoms_estimator_weights``: frozen estimator weights of the data and the randoms,
-        * ``noise_free_data_to_randoms_ratio``: noise-free ratio of the data to randoms weights of each region, used only if ``gic`` is ``False``,
+        * ``data_estimator_weights``, ``randoms_estimator_weights``: frozen estimator weights of the data and the randoms (first leg),
+        * ``noise_free_data_to_randoms_ratio``: noise-free ratio of the data to randoms weights of each region (first leg), used only if ``gic`` is ``False``. With a single leg it is the ratio of the sums of the weights; with two legs the sums are weighted by the estimator weights of the leg, like the ratio of the corresponding measurement,
+        * ``other_data_estimator_weights``, ``other_randoms_estimator_weights``, ``other_noise_free_data_to_randoms_ratio``: the same for the second leg, ``None`` with a single leg,
         * ``ric_args``, ``amr_args``, ``nam_args``, ``data_regions``, ``randoms_regions``: effects and region masks, as tuples of length 0 or 1,
-        * ``n_data_per_region``, ``n_randoms_per_region``, ``gic`` (auxiliary): number of data and randoms objects of each region, and the effective ``gic``.
+        * ``n_data_per_region``, ``n_randoms_per_region``, ``gic``, ``n_legs`` (auxiliary): number of data and randoms objects of each region, the effective ``gic`` and the number of estimator weightings (1 or 2).
 
     Raises
     ------
     NotImplementedError
-        If cross-correlations are requested: only auto-correlations of one tracer are supported.
+        If cross-correlations of several tracers are requested (tuples of FKP fields): only one tracer is supported, with one or two estimator weightings.
+    ValueError
+        If ``estimator_weights`` is a tuple of length other than 2.
     """
-    if any(isinstance(f, tuple) for f in fkp_fields) or isinstance(estimator_weights, tuple):
-        raise NotImplementedError("Only auto-correlations are supported (no tuples of FKP fields or estimator weights).")
+    if any(isinstance(f, tuple) for f in fkp_fields):
+        raise NotImplementedError("Only a single tracer is supported (no tuples of FKP fields); pass a tuple of estimator weights for two weightings.")
+    if isinstance(estimator_weights, tuple) and len(estimator_weights) != 2:
+        raise ValueError(f"estimator_weights must be a name, None or a pair, got {len(estimator_weights)} entries.")
     ric_args, amr_args, nam_args = (_as_single(a, n) for a, n in ((ric_args, "ric_args"), (amr_args, "amr_args"), (nam_args, "nam_args")))
     data_regions, randoms_regions = _as_single(data_regions, "data_regions"), _as_single(randoms_regions, "randoms_regions")
     if (not gic) and any((ric_args, amr_args, nam_args, data_regions, randoms_regions)):
         gic = True
     input_data_weights = _concat([f.data.weights for f in fkp_fields])
     input_randoms_weights = _concat([f.randoms.weights for f in fkp_fields])
-    if estimator_weights is None:
-        data_estimator_weights, randoms_estimator_weights = jnp.ones_like(input_data_weights), jnp.ones_like(input_randoms_weights)
+
+    def leg_weights(name):
+        if name is None:
+            return jnp.ones_like(input_data_weights), jnp.ones_like(input_randoms_weights)
+        return tuple(_concat([getattr(f, which).extra[name] for f in fkp_fields]) for which in ("data", "randoms"))
+
+    def weighted_ratios(name):
+        if name is None:
+            return [f.data.weights.sum() / f.randoms.weights.sum() for f in fkp_fields]
+        return [(f.data.weights * f.data.extra[name]).sum() / (f.randoms.weights * f.randoms.extra[name]).sum() for f in fkp_fields]
+
+    if isinstance(estimator_weights, tuple):
+        n_legs = 2
+        (data_estimator_weights, randoms_estimator_weights), (other_data_estimator_weights, other_randoms_estimator_weights) = (leg_weights(n) for n in estimator_weights)
+        ratio, other_ratio = (weighted_ratios(n) for n in estimator_weights)
     else:
-        data_estimator_weights, randoms_estimator_weights = (
-            _concat([getattr(f, name).extra[estimator_weights] for f in fkp_fields]) for name in ("data", "randoms")
-        )
+        n_legs = 1
+        data_estimator_weights, randoms_estimator_weights = leg_weights(estimator_weights)
+        other_data_estimator_weights = other_randoms_estimator_weights = other_ratio = None
+        ratio = [f.data.weights.sum() / f.randoms.weights.sum() for f in fkp_fields]  # unweighted, as in mock_whitenoise
     return FieldWeightsArgs(
         input_data_weights=input_data_weights,
         input_randoms_weights=input_randoms_weights,
         data_estimator_weights=data_estimator_weights,
         randoms_estimator_weights=randoms_estimator_weights,
-        noise_free_data_to_randoms_ratio=[f.data.weights.sum() / f.randoms.weights.sum() for f in fkp_fields],
+        noise_free_data_to_randoms_ratio=ratio,
+        other_data_estimator_weights=other_data_estimator_weights,
+        other_randoms_estimator_weights=other_randoms_estimator_weights,
+        other_noise_free_data_to_randoms_ratio=other_ratio,
         ric_args=ric_args,
         amr_args=amr_args,
         nam_args=nam_args,
@@ -438,14 +467,23 @@ def prepare_field_weights(
         n_data_per_region=tuple(int(f.data.weights.shape[0]) for f in fkp_fields),
         n_randoms_per_region=tuple(int(f.randoms.weights.shape[0]) for f in fkp_fields),
         gic=gic,
+        n_legs=n_legs,
     )
 
 
-def apply_field_weights(data_weights: jax.Array, field_weights_args: FieldWeightsArgs) -> tuple[jax.Array, ...]:
-    r"""
-    Compute the weights of the measured field for the given input data weights, one array per region.
+def _legs(args: FieldWeightsArgs) -> list[tuple]:
+    """Estimator weights of each leg, as ``(data_estimator_weights, randoms_estimator_weights, noise_free_data_to_randoms_ratio)``."""
+    legs = [(args.data_estimator_weights, args.randoms_estimator_weights, args.noise_free_data_to_randoms_ratio)]
+    if args.n_legs == 2:
+        legs.append((args.other_data_estimator_weights, args.other_randoms_estimator_weights, args.other_noise_free_data_to_randoms_ratio))
+    return legs
 
-    RIC, AMR, NAM and the data to randoms renormalization are applied, then the frozen estimator weights and the global integral constraint. Each returned array is the data block (``data weights * estimator weights``) followed by the randoms block (``-alpha * randoms weights * estimator weights``), where ``alpha`` is the ratio of the weighted sums (or its frozen noise-free value if ``gic`` is ``False``).
+
+def apply_field_weights(data_weights: jax.Array, field_weights_args: FieldWeightsArgs) -> tuple:
+    r"""
+    Compute the weights of the measured field for the given input data weights, one array per region (and per leg for two estimator weightings).
+
+    RIC, AMR, NAM and the data to randoms renormalization are applied once, then, for each leg, the frozen estimator weights and the global integral constraint. Each returned array is the data block (``data weights * estimator weights``) followed by the randoms block (``-alpha * randoms weights * estimator weights``), where ``alpha`` is the ratio of the weighted sums of the leg (or its frozen noise-free value if ``gic`` is ``False``).
 
     Parameters
     ----------
@@ -456,8 +494,8 @@ def apply_field_weights(data_weights: jax.Array, field_weights_args: FieldWeight
 
     Returns
     -------
-    tuple[jax.Array, ...]
-        Weights of the field, one array per region.
+    tuple
+        With a single estimator weighting, the weights of the field, one array per region. With two, a pair of such tuples, one per leg ``(leg_A, leg_B)``.
 
     Notes
     -----
@@ -473,15 +511,23 @@ def apply_field_weights(data_weights: jax.Array, field_weights_args: FieldWeight
         data_regions=args.data_regions,
         randoms_regions=args.randoms_regions,
     )
-    data_blocks = _split_regions(data_weights_after_effects[0] * args.data_estimator_weights, args.n_data_per_region)
-    randoms_blocks = _split_regions(randoms_weights_after_effects[0] * args.randoms_estimator_weights, args.n_randoms_per_region)
-    return tuple(
-        _concat([data_block, -(data_block.sum() / randoms_block.sum() if args.gic else args.noise_free_data_to_randoms_ratio[iregion]) * randoms_block])
-        for iregion, (data_block, randoms_block) in enumerate(zip(data_blocks, randoms_blocks, strict=True))
+    per_leg = tuple(
+        tuple(
+            _concat([data_block, -(data_block.sum() / randoms_block.sum() if args.gic else ratio[iregion]) * randoms_block])
+            for iregion, (data_block, randoms_block) in enumerate(
+                zip(
+                    _split_regions(data_weights_after_effects[0] * data_estimator_weights, args.n_data_per_region),
+                    _split_regions(randoms_weights_after_effects[0] * randoms_estimator_weights, args.n_randoms_per_region),
+                    strict=True,
+                )
+            )
+        )
+        for data_estimator_weights, randoms_estimator_weights, ratio in _legs(args)
     )
+    return per_leg[0] if args.n_legs == 1 else per_leg
 
 
-def field_weights_perturbation_gic_only(relative_noise: jax.Array, field_weights_args: FieldWeightsArgs) -> tuple[jax.Array, ...]:
+def field_weights_perturbation_gic_only(relative_noise: jax.Array, field_weights_args: FieldWeightsArgs) -> tuple:
     r"""
     Compute the first-order response of the field weights to relative noise on the data weights, when only the global integral constraint reacts.
 
@@ -496,20 +542,26 @@ def field_weights_perturbation_gic_only(relative_noise: jax.Array, field_weights
 
     Returns
     -------
-    tuple[jax.Array, ...]
-        Perturbation of the weights of the field, one array per region.
+    tuple
+        Perturbation of the weights of the field, one array per region (a pair of such tuples, one per leg, for two estimator weightings).
 
     Notes
     -----
-    In the math, this is :math:`J_A \mathbf d` with :math:`\mathbf d = \mathbf u_0\boldsymbol\epsilon`.
+    In the math, this is :math:`J_A \mathbf d` with :math:`\mathbf d = \mathbf u_0\boldsymbol\epsilon`. For leg :math:`X` with estimator weights :math:`w_X`, the perturbation is :math:`[u_0\epsilon w_X, -(\sum u_0\epsilon w_X / \sum r w_X)\, r w_X]`.
     """
     args = field_weights_args
-    data_blocks = _split_regions(args.input_data_weights * relative_noise * args.data_estimator_weights, args.n_data_per_region)
-    randoms_blocks = _split_regions(args.input_randoms_weights * args.randoms_estimator_weights, args.n_randoms_per_region)
-    return tuple(
-        _concat([data_block, -(data_block.sum() / randoms_block.sum() if args.gic else 0.0) * randoms_block])
-        for data_block, randoms_block in zip(data_blocks, randoms_blocks, strict=True)
+    per_leg = tuple(
+        tuple(
+            _concat([data_block, -(data_block.sum() / randoms_block.sum() if args.gic else 0.0) * randoms_block])
+            for data_block, randoms_block in zip(
+                _split_regions(args.input_data_weights * relative_noise * data_estimator_weights, args.n_data_per_region),
+                _split_regions(args.input_randoms_weights * randoms_estimator_weights, args.n_randoms_per_region),
+                strict=True,
+            )
+        )
+        for data_estimator_weights, randoms_estimator_weights, _ in _legs(args)
     )
+    return per_leg[0] if args.n_legs == 1 else per_leg
 
 
 def get_region_particles(*fkp_fields: FKPField) -> list[ParticleField]:
@@ -654,9 +706,25 @@ def conventional_shotnoise(
 _STATIC_ARGNAMES = ["n_real", "noise_distribution", "compute_control_variate", "batch_size", "los"]
 
 
+def _of_legs(of, field_weights, n_legs):
+    """Evaluate the bilinear ``of`` (spectrum or shot noise) on the field weights: auto of one leg, or symmetrized cross of the two legs."""
+    return of(field_weights) if n_legs == 1 else of(*field_weights)
+
+
+def _curvature_of(of, noise_free_field_weights, second_order, n_legs):
+    """Curvature term of the second-order expansion of ``of`` around the noise-free field weights: ``Q(Phi_0, Phi_2)``, or ``(Q(Phi_0A, Phi_2B) + Q(Phi_2A, Phi_0B)) / 2`` for two legs."""
+    if n_legs == 1:
+        return of(noise_free_field_weights, second_order)
+    return 0.5 * (of(noise_free_field_weights[0], second_order[1]) + of(second_order[0], noise_free_field_weights[1]))
+
+
+def _responses(spectrum_of, shotnoise_of, field_weights, n_legs):
+    return _of_legs(spectrum_of, field_weights, n_legs), _of_legs(shotnoise_of, field_weights, n_legs)
+
+
 def _control_variate_responses(relative_noise, field_weights_args, spectrum_of, shotnoise_of):
     field_weights = field_weights_perturbation_gic_only(relative_noise, field_weights_args)
-    return spectrum_of(field_weights), shotnoise_of(field_weights)
+    return _responses(spectrum_of, shotnoise_of, field_weights, field_weights_args.n_legs)
 
 
 def _antithetic_step(
@@ -667,9 +735,11 @@ def _antithetic_step(
     field_weights_plus = apply_field_weights(data_weights * (1 + sigma * relative_noise), field_weights_args)
     field_weights_minus = apply_field_weights(data_weights * (1 - sigma * relative_noise), field_weights_args)
     extras = {"control_variate": _control_variate_responses(relative_noise, field_weights_args, spectrum_of, shotnoise_of)} if compute_control_variate else {}
+    spectrum_plus, shotnoise_plus = _responses(spectrum_of, shotnoise_of, field_weights_plus, field_weights_args.n_legs)
+    spectrum_minus, shotnoise_minus = _responses(spectrum_of, shotnoise_of, field_weights_minus, field_weights_args.n_legs)
     return {
-        "power_spectrum_response": 0.5 * (spectrum_of(field_weights_plus) + spectrum_of(field_weights_minus)) - noise_free_spectrum,
-        "shotnoise_response": 0.5 * (shotnoise_of(field_weights_plus) + shotnoise_of(field_weights_minus)) - noise_free_shotnoise,
+        "power_spectrum_response": 0.5 * (spectrum_plus + spectrum_minus) - noise_free_spectrum,
+        "shotnoise_response": 0.5 * (shotnoise_plus + shotnoise_minus) - noise_free_shotnoise,
         "extras": extras,
     }
 
@@ -681,7 +751,8 @@ def _linearized_step(key, field_weights_args, spectrum_of, shotnoise_of, noise_d
         partial(apply_field_weights, field_weights_args=field_weights_args), (data_weights,), (data_weights * relative_noise,)
     )
     extras = {"control_variate": _control_variate_responses(relative_noise, field_weights_args, spectrum_of, shotnoise_of)} if compute_control_variate else {}
-    return {"power_spectrum_response": spectrum_of(first_order_field_weights), "shotnoise_response": shotnoise_of(first_order_field_weights), "extras": extras}
+    spectrum_response, shotnoise_response = _responses(spectrum_of, shotnoise_of, first_order_field_weights, field_weights_args.n_legs)
+    return {"power_spectrum_response": spectrum_response, "shotnoise_response": shotnoise_response, "extras": extras}
 
 
 def _quadratic_step(key, field_weights_args, noise_free_field_weights, spectrum_of, shotnoise_of, noise_distribution, compute_control_variate):
@@ -691,8 +762,9 @@ def _quadratic_step(key, field_weights_args, noise_free_field_weights, spectrum_
     field_weights_of = partial(apply_field_weights, field_weights_args=field_weights_args)
     # forward-over-forward: first and second directional derivatives of the field weights along the perturbation
     first_order, second_order = jax.jvp(lambda x: jax.jvp(field_weights_of, (x,), (weight_perturbation,))[1], (data_weights,), (weight_perturbation,))
-    linear_part = (spectrum_of(first_order), shotnoise_of(first_order))
-    curvature_part = (spectrum_of(noise_free_field_weights, second_order), shotnoise_of(noise_free_field_weights, second_order))
+    n_legs = field_weights_args.n_legs
+    linear_part = _responses(spectrum_of, shotnoise_of, first_order, n_legs)
+    curvature_part = (_curvature_of(spectrum_of, noise_free_field_weights, second_order, n_legs), _curvature_of(shotnoise_of, noise_free_field_weights, second_order, n_legs))
     extras = {"linear_part": linear_part, "curvature_part": curvature_part}
     if compute_control_variate:
         extras["control_variate"] = _control_variate_responses(relative_noise, field_weights_args, spectrum_of, shotnoise_of)
@@ -761,8 +833,8 @@ def sample_shotnoise_template_antithetic(
         field_weights_args=field_weights_args,
         spectrum_of=spectrum_of,
         shotnoise_of=shotnoise_of,
-        noise_free_spectrum=spectrum_of(noise_free_field_weights),
-        noise_free_shotnoise=shotnoise_of(noise_free_field_weights),
+        noise_free_spectrum=_of_legs(spectrum_of, noise_free_field_weights, field_weights_args.n_legs),
+        noise_free_shotnoise=_of_legs(shotnoise_of, noise_free_field_weights, field_weights_args.n_legs),
         sigma=sigma,
         noise_distribution=noise_distribution,
         compute_control_variate=compute_control_variate,
@@ -919,7 +991,7 @@ def measure_power_spectrum_and_shotnoise(
     los: Literal["local", "x", "y", "z"] = "local",
 ) -> tuple[jax.Array, jax.Array]:
     """
-    Measure the unsubtracted power spectrum and the conventional shot noise of the noise-free pipeline.
+    Measure the unsubtracted power spectrum and the conventional shot noise of the noise-free pipeline (symmetrized cross of the two legs for two estimator weightings).
 
     On unclustered Poisson catalogs, the mean of the first output is the true shot noise contribution.
 
@@ -943,8 +1015,10 @@ def measure_power_spectrum_and_shotnoise(
     """
     norms = get_estimator_normalizations(fkp_norms)
     noise_free_field_weights = apply_field_weights(field_weights_args.input_data_weights, field_weights_args)
-    unsubtracted_spectrum = bilinear_power_spectrum(noise_free_field_weights, particles=get_region_particles(*fkp_fields), binner=binner, norms=norms, los=los)
-    return unsubtracted_spectrum, conventional_shotnoise(noise_free_field_weights, binner=binner, norms=norms)
+    n_legs = field_weights_args.n_legs
+    spectrum_of = partial(bilinear_power_spectrum, particles=get_region_particles(*fkp_fields), binner=binner, norms=norms, los=los)
+    shotnoise_of = partial(conventional_shotnoise, binner=binner, norms=norms)
+    return _of_legs(spectrum_of, noise_free_field_weights, n_legs), _of_legs(shotnoise_of, noise_free_field_weights, n_legs)
 
 
 def combine_regions_weighted_by_normalization(
@@ -1138,10 +1212,10 @@ def analytic_shotnoise_template(
     r"""
     Compute the analytic shot-noise template for the survey geometry only, or for the geometry and the global integral constraint.
 
-    The simplified pipeline has data weights ``input data weights * estimator weights`` (:math:`w_i`) and randoms weights ``-alpha * randoms weights * estimator weights``, with ``alpha`` responding to the data weights if ``include_gic`` and frozen otherwise. Writing :math:`b_j` for the randoms weights normalized to a unit sum:
+    The simplified pipeline has, for each estimator weighting :math:`X` (one or two *legs*, :math:`A` and :math:`B`), data weights ``input data weights * estimator weights`` (:math:`u_i w_{X,i}`) and randoms weights ``-alpha_X * randoms weights * estimator weights``, with ``alpha_X`` responding to the data weights if ``include_gic`` and frozen otherwise. With relative noise :math:`\epsilon_i` on the data weights (:math:`E[\epsilon_i\epsilon_j]=\delta_{ij}`), the first-order field of leg :math:`X` is :math:`\delta_X = \sum_i \epsilon_i u_i w_{X,i}(e_i - b_X)`, where :math:`e_i` is the delta of data object :math:`i` and :math:`b_X` the randoms weights of the leg normalized to a unit sum (:math:`b_{X,j}`). Taking the expectation of :math:`Q(\delta_A, \delta_B)` and writing :math:`p_i = u_i^2 w_{A,i} w_{B,i}` (:math:`w_i^2` for a single weighting), :math:`a` the data positions weighted by :math:`p_i` and :math:`Q(x, y)` the symmetrized bilinear power spectrum:
 
-    * geometry only: the spectrum response is :math:`\frac{2\ell+1}{I_0}\langle\sum_i w_i^2\mathcal L_\ell\rangle` (self pairs of the data) and the shot noise response is :math:`\sum_i w_i^2/I_0`.
-    * with the global integral constraint: the spectrum response is the geometry one :math:`- 2 Q(a, b) + (\sum_i w_i^2) Q(b, b)`, with :math:`a` the data positions weighted by :math:`w_i^2` and :math:`Q` the bilinear power spectrum, and the shot noise response is :math:`(\sum_i w_i^2 / I_0)(1 + \sum_j b_j^2)`.
+    * geometry only (:math:`\delta_X = \sum_i\epsilon_i u_i w_{X,i} e_i`): the spectrum response is :math:`\frac{2\ell+1}{I_0}\langle\sum_i p_i\mathcal L_\ell\rangle` (self pairs of the data) and the shot noise response is :math:`\sum_i p_i/I_0`.
+    * with the global integral constraint: the spectrum response is the geometry one :math:`- Q(a, b_B) - Q(a, b_A) + (\sum_i p_i) Q(b_A, b_B)`, and the shot noise response is :math:`(\sum_i p_i / I_0)(1 + \sum_j b_{A,j} b_{B,j})` (data and randoms are disjoint objects, so :math:`e_i` has no overlap with :math:`b_X`). For :math:`A=B` these are :math:`-2Q(a,b) + (\sum_i w_i^2)Q(b,b)` and :math:`(\sum_i w_i^2/I_0)(1+\sum_j b_j^2)`.
 
     Parameters
     ----------
@@ -1170,43 +1244,52 @@ def analytic_shotnoise_template(
 
     Notes
     -----
-    Only the effects-free pipeline is described: RIC, AMR and NAM of ``field_weights_args`` are not accounted for (use :py:func:`sample_shotnoise_template_linearized`). In the math, the responses are :math:`T_\ell(k)` and :math:`S_2`, and the four terms of the global integral constraint case are those of its control variate.
+    With two estimator weightings in ``field_weights_args``, the template is the one of their symmetrized cross spectrum. Only the effects-free pipeline is described: RIC, AMR and NAM of ``field_weights_args`` are not accounted for (use :py:func:`sample_shotnoise_template_linearized`). In the math, the responses are :math:`T_\ell(k)` and :math:`S_2`, and the four terms of the global integral constraint case are those of its control variate.
     """
     if any(ell % 2 for ell in binner.ells):
         raise NotImplementedError("Analytic template only for even multipoles.")
     args = field_weights_args
     norms = get_estimator_normalizations(fkp_norms)
     spectrum_of = partial(bilinear_power_spectrum, particles=get_region_particles(*fkp_fields), binner=binner, norms=norms, los=los)
-    data_block_weights = _split_regions(args.input_data_weights * args.data_estimator_weights, args.n_data_per_region)
-    randoms_block_weights = _split_regions(args.input_randoms_weights * args.randoms_estimator_weights, args.n_randoms_per_region)
-    squared_data_weights = [weights**2 for weights in data_block_weights]
-    normalized_randoms_weights = [weights / jnp.sum(weights) for weights in randoms_block_weights]
-    # sum of the squared data weights over the normalization, from the data blocks alone
-    shotnoise_response = conventional_shotnoise(
-        [jnp.concatenate([data, jnp.zeros_like(randoms)]) for data, randoms in zip(data_block_weights, randoms_block_weights, strict=True)],
-        binner=binner,
-        norms=norms,
-    )
+    # per leg: data weights and randoms weights normalized to a unit sum, one array per region
+    data_legs, normalized_randoms_legs = [], []
+    for data_estimator_weights, randoms_estimator_weights, _ in _legs(args):
+        data_legs.append(_split_regions(args.input_data_weights * data_estimator_weights, args.n_data_per_region))
+        randoms_block_weights = _split_regions(args.input_randoms_weights * randoms_estimator_weights, args.n_randoms_per_region)
+        normalized_randoms_legs.append([weights / jnp.sum(weights) for weights in randoms_block_weights])
+    # product of the data weights of the two legs (squared data weights for a single leg)
+    data_weights_products = [weights * other_weights for weights, other_weights in zip(data_legs[0], data_legs[-1], strict=True)]
+    # sum of the weights products over the normalization, from the data blocks alone
+    def data_only(data_blocks):
+        return [jnp.concatenate([data, jnp.zeros_like(randoms)]) for data, randoms in zip(data_blocks, normalized_randoms_legs[0], strict=True)]
+
+    shotnoise_response = conventional_shotnoise(data_only(data_legs[0]), data_only(data_legs[-1]), binner=binner, norms=norms)
     spectrum_response = jnp.stack(
         [
-            _geometric_self_pair_term(binner, norms[i], fkp_field.data.positions, squared_data_weights[i], shotnoise_response[i])
+            _geometric_self_pair_term(binner, norms[i], fkp_field.data.positions, data_weights_products[i], shotnoise_response[i])
             for i, fkp_field in enumerate(fkp_fields)
         ]
     )
     if include_gic:
-        squared_data_field_weights = [
-            jnp.concatenate([squared, jnp.zeros_like(randoms)]) for squared, randoms in zip(squared_data_weights, normalized_randoms_weights, strict=True)
-        ]
-        normalized_randoms_field_weights = [
-            jnp.concatenate([jnp.zeros_like(squared), randoms]) for squared, randoms in zip(squared_data_weights, normalized_randoms_weights, strict=True)
-        ]
-        sum_squared_data_weights = jnp.stack([jnp.sum(squared) for squared in squared_data_weights])
+        products_field_weights = [jnp.concatenate([products, jnp.zeros_like(randoms)]) for products, randoms in zip(data_weights_products, normalized_randoms_legs[0], strict=True)]
+
+        def randoms_field_weights(normalized_randoms):
+            return [jnp.concatenate([jnp.zeros_like(products), randoms]) for products, randoms in zip(data_weights_products, normalized_randoms, strict=True)]
+
+        randoms_field_weights_legs = [randoms_field_weights(normalized_randoms) for normalized_randoms in normalized_randoms_legs]
+        sum_data_weights_products = jnp.stack([jnp.sum(products) for products in data_weights_products])
+        if args.n_legs == 1:
+            data_randoms_cross = 2.0 * spectrum_of(products_field_weights, randoms_field_weights_legs[0])
+        else:
+            data_randoms_cross = spectrum_of(products_field_weights, randoms_field_weights_legs[1]) + spectrum_of(products_field_weights, randoms_field_weights_legs[0])
         spectrum_response = (
             spectrum_response
-            - 2.0 * spectrum_of(squared_data_field_weights, normalized_randoms_field_weights)
-            + sum_squared_data_weights[:, None, None] * spectrum_of(normalized_randoms_field_weights)
+            - data_randoms_cross
+            + sum_data_weights_products[:, None, None] * spectrum_of(randoms_field_weights_legs[0], None if args.n_legs == 1 else randoms_field_weights_legs[1])
         )
-        shotnoise_response = shotnoise_response * (1.0 + jnp.stack([jnp.sum(randoms**2) for randoms in normalized_randoms_weights]))
+        shotnoise_response = shotnoise_response * (
+            1.0 + jnp.stack([jnp.sum(randoms * other_randoms) for randoms, other_randoms in zip(normalized_randoms_legs[0], normalized_randoms_legs[-1], strict=True)])
+        )
     return spectrum_response, shotnoise_response, spectrum_response / shotnoise_response[:, None, None]
 
 
