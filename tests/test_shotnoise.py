@@ -443,8 +443,10 @@ def test_cross_correlations_rejected(toy):
 
 def two_leg_kwargs(toy, estimator_weights, effects="gic"):
     """Like ``kwargs`` with ``estimator_weights`` forwarded to ``prepare_field_weights``."""
-    kw = toy.forward_kwargs(**EFFECTS[effects], estimator_weights=estimator_weights)
-    args = prepare_field_weights(*toy.fkp_fields, gic=EFFECTS[effects].get("gic", True), **{k: v for k, v in kw.items() if k not in ("binner", "fkp_norms")})
+    effects_kw = dict(EFFECTS[effects])
+    gic = effects_kw.pop("gic", True)
+    kw = toy.forward_kwargs(**effects_kw, estimator_weights=estimator_weights)
+    args = prepare_field_weights(*toy.fkp_fields, gic=gic, **{k: v for k, v in kw.items() if k not in ("binner", "fkp_norms")})
     return {"field_weights_args": args, "binner": toy.binner, "fkp_norms": toy.fkp_norms}
 
 
@@ -463,16 +465,17 @@ def with_second_weights(toy):
     return replace(toy, fkp_fields=fkp_fields)
 
 
-def test_single_leg_unchanged(toy):
+def test_single_leg_structure(toy):
     """(a) A single string (or None) gives one leg, with the same structure as before."""
     for name in ("weight_FKP", None):
         args = prepare_field_weights(*toy.fkp_fields, estimator_weights=name)
         assert args.n_legs == 1 and args.other_data_estimator_weights is None
         w = apply_field_weights(args.input_data_weights, args)
         assert isinstance(w, tuple) and all(hasattr(x, "shape") for x in w)
-        # frozen alpha is the unweighted ratio of the sums, as in mock_whitenoise
+        # frozen alpha is the ratio of the estimator-weighted sums
         f = toy.fkp_fields[0]
-        np.testing.assert_array_equal(args.noise_free_data_to_randoms_ratio[0], f.data.weights.sum() / f.randoms.weights.sum())
+        d, r = (f.data.weights, f.randoms.weights) if name is None else (f.data.weights * f.data.extra[name], f.randoms.weights * f.randoms.extra[name])
+        np.testing.assert_allclose(args.noise_free_data_to_randoms_ratio[0], d.sum() / r.sum(), rtol=1e-14)
     # the quantities of a single-leg run are those of the explicit formula d.w, -alpha r.w
     args = prepare_field_weights(*toy.fkp_fields, estimator_weights="weight_FKP")
     f = toy.fkp_fields[0]
@@ -485,7 +488,7 @@ def test_estimator_weights_tuple_validation(toy):
         prepare_field_weights(*toy.fkp_fields, estimator_weights=("weight_FKP",) * 3)
 
 
-@pytest.mark.parametrize("effects", ["gic", "ric+amr"])
+@pytest.mark.parametrize("effects", ["geometry", "gic", "ric+amr"])
 @pytest.mark.parametrize("sampler", [sample_shotnoise_template_linearized, sample_shotnoise_template_quadratic])
 def test_two_legs_with_equal_weights_equal_single_leg(toy, effects, sampler):
     """(b) With w_A == w_B the two-leg run is the single-leg run."""

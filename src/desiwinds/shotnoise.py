@@ -205,7 +205,16 @@ def mock_whitenoise(
     if gic:
         alphas_gic = None
     else:
-        alphas_gic = jax.tree.map(lambda fkp: fkp.data.weights.sum() / fkp.randoms.weights.sum(), fkp_fields, is_leaf=lambda x: isinstance(x, FKPField))
+        def frozen_alpha(fkp, name):
+            data, randoms = fkp.data.weights, fkp.randoms.weights
+            if name:
+                data, randoms = data * fkp.data.extra[name], randoms * fkp.randoms.extra[name]
+            return data.sum() / randoms.sum()
+
+        alphas_gic = tuple(
+            tuple(frozen_alpha(fkp, name) for fkp, name in zip(group, estimator_weights if isinstance(estimator_weights, tuple) else (estimator_weights,) * len(group), strict=True))
+            for group in fkp_fields
+        )
 
     # Length of list = 1 or 2 dependent on whether we are doing auto or cross spectra
     data_weights = [
@@ -408,7 +417,7 @@ def prepare_field_weights(
         * ``input_data_weights``: concatenated noise-free input data weights,
         * ``input_randoms_weights``: concatenated input randoms weights,
         * ``data_estimator_weights``, ``randoms_estimator_weights``: frozen estimator weights of the data and the randoms (first leg),
-        * ``noise_free_data_to_randoms_ratio``: noise-free ratio of the data to randoms weights of each region (first leg), used only if ``gic`` is ``False``. With a single leg it is the ratio of the sums of the weights; with two legs the sums are weighted by the estimator weights of the leg, like the ratio of the corresponding measurement,
+        * ``noise_free_data_to_randoms_ratio``: noise-free ratio of the data to randoms weights of each region (first leg), used only if ``gic`` is ``False``. the sums are weighted by the estimator weights of the leg, like the ratio of the corresponding measurement,
         * ``other_data_estimator_weights``, ``other_randoms_estimator_weights``, ``other_noise_free_data_to_randoms_ratio``: the same for the second leg, ``None`` with a single leg,
         * ``ric_args``, ``amr_args``, ``nam_args``, ``data_regions``, ``randoms_regions``: effects and region masks, as tuples of length 0 or 1,
         * ``n_data_per_region``, ``n_randoms_per_region``, ``gic``, ``n_legs`` (auxiliary): number of data and randoms objects of each region, the effective ``gic`` and the number of estimator weightings (1 or 2).
@@ -449,7 +458,7 @@ def prepare_field_weights(
         n_legs = 1
         data_estimator_weights, randoms_estimator_weights = leg_weights(estimator_weights)
         other_data_estimator_weights = other_randoms_estimator_weights = other_ratio = None
-        ratio = [f.data.weights.sum() / f.randoms.weights.sum() for f in fkp_fields]  # unweighted, as in mock_whitenoise
+        ratio = weighted_ratios(estimator_weights)
     return FieldWeightsArgs(
         input_data_weights=input_data_weights,
         input_randoms_weights=input_randoms_weights,
