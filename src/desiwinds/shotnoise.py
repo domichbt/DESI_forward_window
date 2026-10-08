@@ -1270,7 +1270,7 @@ def analytic_shotnoise_template(
     data_weights_products = [weights * other_weights for weights, other_weights in zip(data_legs[0], data_legs[-1], strict=True)]
     # sum of the weights products over the normalization, from the data blocks alone
     def data_only(data_blocks):
-        return [jnp.concatenate([data, jnp.zeros_like(randoms)]) for data, randoms in zip(data_blocks, normalized_randoms_legs[0], strict=True)]
+        return [_concat([data, jnp.zeros_like(randoms)]) for data, randoms in zip(data_blocks, normalized_randoms_legs[0], strict=True)]
 
     shotnoise_response = conventional_shotnoise(data_only(data_legs[0]), data_only(data_legs[-1]), binner=binner, norms=norms)
     spectrum_response = jnp.stack(
@@ -1279,11 +1279,12 @@ def analytic_shotnoise_template(
             for i, fkp_field in enumerate(fkp_fields)
         ]
     )
+    # the field weights must be laid out like the particles of get_region_particles: _concat (per shard), not jnp.concatenate
     if include_gic:
-        products_field_weights = [jnp.concatenate([products, jnp.zeros_like(randoms)]) for products, randoms in zip(data_weights_products, normalized_randoms_legs[0], strict=True)]
+        products_field_weights = [_concat([products, jnp.zeros_like(randoms)]) for products, randoms in zip(data_weights_products, normalized_randoms_legs[0], strict=True)]
 
         def randoms_field_weights(normalized_randoms):
-            return [jnp.concatenate([jnp.zeros_like(products), randoms]) for products, randoms in zip(data_weights_products, normalized_randoms, strict=True)]
+            return [_concat([jnp.zeros_like(products), randoms]) for products, randoms in zip(data_weights_products, normalized_randoms, strict=True)]
 
         randoms_field_weights_legs = [randoms_field_weights(normalized_randoms) for normalized_randoms in normalized_randoms_legs]
         sum_data_weights_products = jnp.stack([jnp.sum(products) for products in data_weights_products])
