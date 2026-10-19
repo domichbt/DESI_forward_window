@@ -962,6 +962,19 @@ def _fill_with_constant(tree, constant):
     return jax.tree.map(lambda _: constant, tree, is_leaf=lambda x: jax.tree_util.tree_structure(x) == jax.tree_util.tree_structure(constant))
 
 
+def _check_effects_per_field(fkp_fields, **effects):
+    """Raise if the number of effect arguments does not match the number of fields in each pair, as extra fields would otherwise silently get no correction."""
+    n_fields = {len(fkp_field) for fkp_field in fkp_fields}
+    if len(n_fields) != 1:
+        raise ValueError(f"All FKP field groups must have the same length, got lengths {sorted(n_fields)}.")
+    (n_fields,) = n_fields
+    for name, value in effects.items():
+        if value and len(value) != n_fields:
+            raise ValueError(
+                f"Got {len(value)} {name} for {n_fields} fields per pair; pass one per field (e.g. ({name.removesuffix('s')}, {name.removesuffix('s')}) for OQE weight variants of a single tracer)."
+            )
+
+
 def mock_survey_catalog(
     # Catalogs
     *fkp_fields: FKPField | tuple[FKPField, FKPField],
@@ -1114,6 +1127,7 @@ def mock_survey_catalog(
     # ensure all fields are tuples, for easier processing later
     # they will be unpacked for P(k) anyways
     fkp_fields = tuple(fkp_field if isinstance(fkp_field, tuple) else (fkp_field,) for fkp_field in fkp_fields)
+    _check_effects_per_field(fkp_fields, ric_args=ric_args, amr_args=amr_args, nam_args=nam_args, data_regions=data_regions, randoms_regions=randoms_regions)
 
     if gic:
         alphas_gic = None
@@ -1308,13 +1322,14 @@ def mock_whitenoise(
             sigma=jnp.array([1.]), # same white noise realisation for both
             seed=jax.random.key(42),
             los="local",
-            ric_args=ric_args,
-            amr_args=amr_args,
+            ric_args=(ric_args, ric_args), # one per field: both OQE variants share the same particles
+            amr_args=(amr_args, amr_args),
             nam_args=None,
             fkp_norms=fkp_norms,
             binner=binner,
-            data_regions=ric_args.data_regions,
-            randoms_regions=ric_args.randoms_regions,
+            data_regions=(ric_args.data_regions, ric_args.data_regions),
+            randoms_regions=(ric_args.randoms_regions, ric_args.randoms_regions),
+            fields=(0, 0),
         )
     """
     if (not gic) and any(x is not None for x in (ric_args, amr_args, nam_args, data_regions, randoms_regions)):
@@ -1331,6 +1346,7 @@ def mock_whitenoise(
     # ensure all fields are tuples, for easier processing later
     # they will be unpacked for P(k) anyways
     fkp_fields = tuple(fkp_field if isinstance(fkp_field, tuple) else (fkp_field,) for fkp_field in fkp_fields)
+    _check_effects_per_field(fkp_fields, ric_args=ric_args, amr_args=amr_args, nam_args=nam_args, data_regions=data_regions, randoms_regions=randoms_regions)
 
     if gic:
         alphas_gic = None

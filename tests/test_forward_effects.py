@@ -371,3 +371,31 @@ def test_split_weights_is_inverse_of_concatenation():
     assert [x[0].shape[0] for x in split_r] == [40, 70]
     np.testing.assert_array_equal(np.asarray(local_concatenate([x[0] for x in split_d], axis=0, sharding_mesh=mesh)), np.asarray(dw[0]))
     np.testing.assert_array_equal(np.asarray(local_concatenate([x[0] for x in split_r], axis=0, sharding_mesh=mesh)), np.asarray(rw[0]))
+
+
+# --------------------------------------------------------------------------------------
+# Effect arguments must come one per field of each pair
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("func", ["mock_survey_catalog", "mock_whitenoise"])
+@pytest.mark.parametrize("bad", ["ric_args", "amr_args", "nam_args", "data_regions", "randoms_regions"])
+def test_mock_raises_on_single_effect_arg_for_pair(func, bad):
+    """A single effect argument for a pair of fields (e.g. OQE variants) used to silently correct only the first field."""
+    import desiwinds.forward as fw
+
+    kwargs = dict.fromkeys(("ric_args", "amr_args", "nam_args", "data_regions", "randoms_regions", "binner", "fkp_norms", "estimator_weights"))
+    kwargs[bad] = object()  # a single (non-tuple) argument
+    extra = {"theory": None, "unitary_amplitude": True} if func == "mock_survey_catalog" else {"sigma": None}
+    with pytest.raises(ValueError, match=bad):
+        getattr(fw, func)(("sgc_oqe1", "sgc_oqe2"), ("ngc_oqe1", "ngc_oqe2"), seed=None, los="local", **extra, **kwargs)
+
+
+def test_check_effects_per_field_accepts_matching_and_empty():
+    """Matching or absent effect arguments pass; ragged field groups are rejected."""
+    from desiwinds.forward import _check_effects_per_field
+
+    _check_effects_per_field((("a", "b"),), ric_args=(1, 2), amr_args=(), data_regions=(1, 2))
+    _check_effects_per_field((("a",), ("b",)), ric_args=(1,), nam_args=())
+    with pytest.raises(ValueError, match="same length"):
+        _check_effects_per_field((("a", "b"), ("c",)))
