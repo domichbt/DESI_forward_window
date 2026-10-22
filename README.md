@@ -59,3 +59,22 @@ with create_sharding_mesh() as sharding_mesh:
 
 jax.distributed.shutdown()
 ```
+
+### Windows and post-processing
+
+Windows are Jacobians of the forward model at a fiducial theory, averaged over realizations (`desiwinds.window`):
+
+- `get_window_spikes` / `get_windows_spikes`: one column per theory bin;
+- `get_window_basis`: one column per basis vector (any power spectrum shape, given on the theory bins), at a cost that scales with
+  the number of vectors. The window theory (`get_basis_theory`) stores the vectors and the fiducial theory at which the derivative
+  is taken; read them back with `get_basis_vectors` and `get_fiducial_theory`, and project an analytic window onto the same
+  vectors with `project_window`.
+
+With `return_shotnoise_jacobians=True`, they also return the Jacobians of the estimated shot noise. `desiwinds.post` then
+post-processes a window run, in this order:
+
+1. `average_windows` over the realizations;
+2. `correct_selfpairs` (or `correct_selfpairs_analytic` without the Jacobians): the mock data are randoms weighted by `1 + delta`,
+   so their self-pairs add a white noise linear in the theory, which the Jacobian puts into the window; this removes it, given the
+   white-noise template of the same effects;
+3. `apply_control_variate` with the analytic geometry window (`get_window_geometry`).
