@@ -239,6 +239,7 @@ def get_window_basis(
     tmpdir: str | os.PathLike | None = None,
     survey_names: list[str] | None = None,
     return_shotnoise_jacobians: bool = False,
+    basis_names: list[str] | None = None,
 ):
     """
     Estimate the response of the observation forward modelling ``mock_survey`` to the theory directions ``basis_vectors``, at the fiducial ``theory``.
@@ -260,6 +261,8 @@ def get_window_basis(
         ``theory.value()``, or ``(n_vectors, n_ells, n_k)``.
     nreal, seeds, batch_size, mock_survey_args, mock_survey_kwargs, static_argnums, static_argnames, tmpdir, survey_names, return_shotnoise_jacobians
         See :py:func:`get_window_spikes`.
+    basis_names : list[str] | None, optional
+        Names of the basis vectors, stored with them (see :py:func:`get_basis_theory`).
 
     Returns
     -------
@@ -279,7 +282,7 @@ def get_window_basis(
         mock_survey,
         theory,
         injected_theory=jnp.asarray(basis_vectors, dtype=theory.value().dtype),
-        window_theory=get_basis_theory(theory, basis_vectors),
+        window_theory=get_basis_theory(theory, basis_vectors, names=basis_names),
         nreal=nreal,
         seeds=seeds,
         batch_size=batch_size,
@@ -294,7 +297,7 @@ def get_window_basis(
     )
 
 
-def get_basis_theory(theory: Mesh2SpectrumPoles, basis_vectors: np.ndarray) -> ObservableTree:
+def get_basis_theory(theory: Mesh2SpectrumPoles, basis_vectors: np.ndarray, names: list[str] | None = None) -> ObservableTree:
     """
     Theory side of a window computed on ``basis_vectors`` at the fiducial ``theory`` (see :py:func:`get_window_basis`).
 
@@ -303,7 +306,8 @@ def get_basis_theory(theory: Mesh2SpectrumPoles, basis_vectors: np.ndarray) -> O
     - ``value``: one entry per window column, the least-squares coefficients of the fiducial ``theory`` on the basis vectors;
     - ``vectors``: the basis vectors, of shape ``(n_vectors, n_ells, n_k)``;
     - ``fiducial``: the fiducial ``theory``, where the derivative is taken, of shape ``(n_ells, n_k)``;
-    - ``k_theory``, ``k_edges_theory`` and ``ells_theory``: the bins of ``theory``.
+    - ``k_theory``, ``k_edges_theory`` and ``ells_theory``: the bins of ``theory``;
+    - ``names``: if given, the names of the basis vectors.
 
     Use :py:func:`get_basis_vectors` and :py:func:`get_fiducial_theory` to read them back.
     """
@@ -320,14 +324,25 @@ def get_basis_theory(theory: Mesh2SpectrumPoles, basis_vectors: np.ndarray) -> O
         k_theory=k,
         k_edges_theory=k_edges,
         ells_theory=np.array(ells),
+        **({} if names is None else {"names": _basis_names(names, len(basis_vectors))}),
     )
     return ObservableTree([leaf], types=["basis"])
 
 
-def get_basis_vectors(theory: ObservableTree) -> np.ndarray:
-    """Basis vectors of a window theory from :py:func:`get_basis_theory`, of shape ``(n_vectors, n_theory)`` (multipoles concatenated)."""
-    vectors = np.asarray(theory.get(types="basis").values("vectors"))
-    return vectors.reshape(len(vectors), -1)
+def get_basis_vectors(theory: ObservableTree, return_names: bool = False) -> np.ndarray | tuple[np.ndarray, list[str] | None]:
+    """
+    Basis vectors of a window theory from :py:func:`get_basis_theory`, of shape ``(n_vectors, n_theory)`` (multipoles concatenated).
+
+    If ``return_names``, also return their names (``None`` if they were not stored).
+    """
+    leaf = theory.get(types="basis")
+    vectors = np.asarray(leaf.values("vectors"))
+    vectors = vectors.reshape(len(vectors), -1)
+    if return_names:
+        names = leaf.values().get("names", None)
+        names = None if names is None else [str(name) for name in names]
+        return vectors, names
+    return vectors
 
 
 def get_fiducial_theory(theory: ObservableTree | Mesh2SpectrumPoles) -> Mesh2SpectrumPoles:
@@ -348,16 +363,16 @@ def get_fiducial_theory(theory: ObservableTree | Mesh2SpectrumPoles) -> Mesh2Spe
     return Mesh2SpectrumPoles(poles, ells=[int(ell) for ell in leaf.values("ells_theory")])
 
 
-def project_window(window: WindowMatrix, basis_vectors: np.ndarray) -> WindowMatrix:
+def project_window(window: WindowMatrix, basis_vectors: np.ndarray, names: list[str] | None = None) -> WindowMatrix:
     """
     Project a window computed on the bins of its theory (*e.g.* :py:func:`get_window_geometry`, or spikes) onto ``basis_vectors``.
 
     ``basis_vectors`` are given on these bins (see :py:func:`get_window_basis`). The result has the theory
     :py:func:`get_basis_theory`, so that it can be combined with windows from :py:func:`get_window_basis`, as in
-    :py:func:`desiwinds.post.apply_control_variate`.
+    :py:func:`desiwinds.post.apply_control_variate`. ``names`` are stored with the vectors.
     """
     basis_vectors = _flat_basis_vectors(window.theory, basis_vectors)
-    return window.clone(value=np.asarray(window.value()) @ basis_vectors.T, theory=get_basis_theory(window.theory, basis_vectors))
+    return window.clone(value=np.asarray(window.value()) @ basis_vectors.T, theory=get_basis_theory(window.theory, basis_vectors, names=names))
 
 
 def _real_theory(theory: Mesh2SpectrumPoles) -> Mesh2SpectrumPoles:
@@ -377,6 +392,13 @@ def _common_k_bins(theory: Mesh2SpectrumPoles) -> tuple[np.ndarray, np.ndarray]:
         if not np.array_equal(np.asarray(pole.edges("k")), k_edges):
             raise ValueError("All theory multipoles must share the same k bins.")
     return k, k_edges
+
+
+def _basis_names(names: list[str], n_vectors: int) -> np.ndarray:
+    names = np.array([str(name) for name in names])
+    if names.shape != (n_vectors,):
+        raise ValueError(f"Got {names.size} basis names for {n_vectors} basis vectors.")
+    return names
 
 
 def _flat_basis_vectors(theory: Mesh2SpectrumPoles, basis_vectors: np.ndarray) -> np.ndarray:

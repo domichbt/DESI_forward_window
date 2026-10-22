@@ -78,3 +78,9 @@ post-processes a window run, in this order:
    so their self-pairs add a white noise linear in the theory, which the Jacobian puts into the window; this removes it, given the
    white-noise template of the same effects;
 3. `apply_control_variate` with the analytic geometry window (`get_window_geometry`).
+
+For the linear local-PNG + Kaiser model, `desiwinds.convenience.get_png_basis_vectors` gives the basis vectors
+\{P, gP, g²P\} × multipoles on the window's theory bins (6 for Kaiser, or all 9 responses), with their names, and
+`get_png_kaiser_coefficients` the matching coefficients from (b1, b_phi f_NL, f) at the effective redshift. Shapes at z = 0 with
+`get_growth_ratio(cosmology, z_eff)` keep the window independent of redshift, up to the scale-dependent growth from massive
+neutrinos (≤ 0.6% for 0.06 eV at z ≤ 2.5); shapes built at `z = z_eff` are exact.
