@@ -123,3 +123,21 @@ def test_basis_names_roundtrip(cosmology, theory, tmp_path):
     assert get_basis_vectors(project_window(window, vectors).theory, return_names=True)[1] is None
     with pytest.raises(ValueError):
         project_window(window, vectors, names=names[:-1])
+
+
+def test_project_window_on_sub_theory(cosmology, theory):
+    """A window on a larger theory grid projected onto vectors on a subset of its bins drops the other columns."""
+    rng = np.random.default_rng(1)
+    sub = theory.select(k=(0.003, 0.1))
+    vectors, names = get_png_basis_vectors(sub, cosmology=cosmology)
+    window = lss.WindowMatrix(value=rng.normal(size=(7, theory.value().size)), observable=lss.ObservableLeaf(value=np.zeros(7)), theory=theory)
+    projected = project_window(window, vectors, names=names, basis_theory=sub)
+    # same as padding the vectors with zeros on the full grid
+    k_edges, sub_edges = np.asarray(theory.get(0).edges("k")), np.asarray(sub.get(0).edges("k"))
+    inside = np.array([np.any(np.all(np.isclose(edge, sub_edges), axis=-1)) for edge in k_edges])
+    padded = np.zeros((len(vectors), len(theory.ells), k_edges.shape[0]))
+    padded[..., inside] = _blocks(vectors, sub)
+    assert np.allclose(np.asarray(projected.value()), np.asarray(window.value()) @ padded.reshape(len(vectors), -1).T)
+    assert np.allclose(get_basis_vectors(projected.theory), vectors)
+    with pytest.raises(ValueError):
+        project_window(window, vectors, basis_theory=sub.map(lambda pole: pole.clone(k_edges=np.asarray(pole.edges("k")) * 1.01)))

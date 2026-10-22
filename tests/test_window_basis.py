@@ -100,8 +100,10 @@ def test_spike_window_is_jacobian(survey):
 
 
 def test_shotnoise_flag_does_not_change_window(survey):
-    without = get_window_spikes(survey["mock_survey"], survey["theory"], nreal=NREAL, batch_size=4)[0][0]
-    assert np.array_equal(np.asarray(without.value()), np.asarray(survey["spikes"][0]["window"][0].value()))
+    without = np.asarray(get_window_spikes(survey["mock_survey"], survey["theory"], nreal=NREAL, batch_size=4)[0][0].value())
+    with_jacobians = np.asarray(survey["spikes"][0]["window"][0].value())
+    # bitwise on CPU; on GPU, the extra outputs change the compiled program, hence rounding differences
+    assert np.allclose(without, with_jacobians, rtol=0, atol=1e-10 * np.abs(with_jacobians).max())
 
 
 @pytest.mark.parametrize("product", ["window", "shotnoise_jacobian", "data_shotnoise_jacobian"])

@@ -363,16 +363,54 @@ def get_fiducial_theory(theory: ObservableTree | Mesh2SpectrumPoles) -> Mesh2Spe
     return Mesh2SpectrumPoles(poles, ells=[int(ell) for ell in leaf.values("ells_theory")])
 
 
-def project_window(window: WindowMatrix, basis_vectors: np.ndarray, names: list[str] | None = None) -> WindowMatrix:
+def project_window(
+    window: WindowMatrix, basis_vectors: np.ndarray, names: list[str] | None = None, basis_theory: Mesh2SpectrumPoles | None = None
+) -> WindowMatrix:
     """
     Project a window computed on the bins of its theory (*e.g.* :py:func:`get_window_geometry`, or spikes) onto ``basis_vectors``.
 
-    ``basis_vectors`` are given on these bins (see :py:func:`get_window_basis`). The result has the theory
-    :py:func:`get_basis_theory`, so that it can be combined with windows from :py:func:`get_window_basis`, as in
-    :py:func:`desiwinds.post.apply_control_variate`. ``names`` are stored with the vectors.
+    The result has the theory :py:func:`get_basis_theory`, so that it can be combined with windows from
+    :py:func:`get_window_basis`, as in :py:func:`desiwinds.post.apply_control_variate`. ``names`` are stored with the vectors.
+
+    Parameters
+    ----------
+    window : WindowMatrix
+        Window on theory bins.
+    basis_vectors : np.ndarray
+        Basis vectors, on the bins of the window theory, or on those of ``basis_theory`` if given.
+    names : list[str] | None, optional
+        Names of the basis vectors.
+    basis_theory : Mesh2SpectrumPoles | None, optional
+        Theory on whose bins ``basis_vectors`` are given, *e.g.* the fiducial theory of a basis window
+        (:py:func:`get_fiducial_theory`), so that the projection has the same basis theory. Each of its bins must be a bin of
+        the window theory; the window columns of the other bins are dropped (the basis vectors are 0 there, as the Gaussian
+        mocks paint nothing outside the bins of their theory).
     """
-    basis_vectors = _flat_basis_vectors(window.theory, basis_vectors)
-    return window.clone(value=np.asarray(window.value()) @ basis_vectors.T, theory=get_basis_theory(window.theory, basis_vectors, names=names))
+    if basis_theory is None:
+        basis_theory, columns = window.theory, slice(None)
+    else:
+        columns = _matching_columns(window.theory, basis_theory)
+    basis_vectors = _flat_basis_vectors(basis_theory, basis_vectors)
+    value = np.asarray(window.value())[:, columns] @ basis_vectors.T
+    return window.clone(value=value, theory=get_basis_theory(basis_theory, basis_vectors, names=names))
+
+
+def _matching_columns(theory: Mesh2SpectrumPoles, sub_theory: Mesh2SpectrumPoles, rtol: float = 1e-6) -> np.ndarray:
+    """Return the indices of the entries of ``theory`` (multipoles concatenated) with the bins of ``sub_theory``, in its order."""
+    leaves, offsets = list(theory), np.cumsum([0] + [leaf.size for leaf in theory])
+    ells = list(theory.ells)
+    columns = []
+    for ell, sub_leaf in zip(sub_theory.ells, sub_theory, strict=True):
+        if ell not in ells:
+            raise ValueError(f"The window theory has no ell = {ell}.")
+        iell = ells.index(ell)
+        edges, sub_edges = np.asarray(leaves[iell].edges("k")), np.asarray(sub_leaf.edges("k"))
+        atol = rtol * np.abs(edges).max()
+        match = np.all(np.abs(edges[None, :, :] - sub_edges[:, None, :]) <= atol, axis=-1)
+        if not np.all(match.sum(axis=-1) == 1):
+            raise ValueError(f"Some bins of ell = {ell} are not bins of the window theory.")
+        columns.append(offsets[iell] + np.argmax(match, axis=-1))
+    return np.concatenate(columns)
 
 
 def _real_theory(theory: Mesh2SpectrumPoles) -> Mesh2SpectrumPoles:
