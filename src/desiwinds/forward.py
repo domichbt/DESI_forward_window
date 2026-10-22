@@ -931,9 +931,21 @@ def _get_pk_nogic(*fkp_fields, alphas, fkp_norm, binner, los, fields=None):
 
 
 def _get_data_shotnoise(*fkp_fields, fkp_norm, binner, fields=None):
-    """Data-only monopole shot noise (``num_shotnoise`` of the data particles alone), divided by the monopole normalization."""
-    num_shotnoise = compute_fkp2_shotnoise(*[fkp_field.data for fkp_field in fkp_fields], bin=binner, fields=fields)
-    return jnp.ravel(num_shotnoise[list(binner.ells).index(0)])[0].real / jnp.ravel(jnp.asarray(fkp_norm))[0]
+    """
+    Data-only shot noise: the self-pair sum of the data particles alone (with the pair weights of the spectrum), over the normalization.
+
+    With a monopole in ``binner``, this is its ``num_shotnoise`` over its normalization. Without (*e.g.* the ell = 2 spectrum of OQE
+    weights, computed on its own), jaxpower assigns no shot noise to the multipoles, so the self-pair sum is computed directly and
+    divided by the normalization of the first multipole.
+    """
+    data = [fkp_field.data for fkp_field in fkp_fields]
+    ells = list(binner.ells)
+    if 0 in ells:
+        num_shotnoise = jnp.ravel(compute_fkp2_shotnoise(*data, bin=binner, fields=fields)[ells.index(0)])[0]
+        return num_shotnoise.real / jnp.ravel(jnp.asarray(fkp_norm))[ells.index(0)]
+    if getattr(binner, "klimit", None) is not None:
+        raise NotImplementedError("Data-only shot noise without a monopole is not implemented for binners with klimit.")
+    return jnp.real(compute_fkp2_shotnoise(*data, fields=fields)) / jnp.ravel(jnp.asarray(fkp_norm))[0]
 
 
 def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
