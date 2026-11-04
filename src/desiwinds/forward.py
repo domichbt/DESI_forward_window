@@ -888,22 +888,24 @@ def _read_mesh_to_fkp(
 
 
 def _read_data(
-    fkp_field: FKPField | tuple[FKPField, ...],
+    fkp_field: tuple[FKPField, ...],
     theory: ObservableTree,
     seed: jax.Array,
     los: Literal["local", "x", "y", "z"],
     unitary_amplitude: bool,
-) -> FKPField | tuple[FKPField, ...]:
-    mattrs = fkp_field[0].attrs if isinstance(fkp_field, tuple) else fkp_field.attrs
-    mesh = generate_anisotropic_gaussian_mesh(
-        mattrs,
+) -> tuple[FKPField, ...]:
+    meshes = generate_anisotropic_gaussian_mesh(
+        fkp_field[0].attrs,
         poles=theory,
         seed=seed,
         los=los,
         unitary_amplitude=unitary_amplitude,
     )
-    fkp_field = _read_mesh_to_fkp(fkp_field, mesh)
-    del mesh
+    # one mesh per field: a tuple of two meshes for a cross-correlation theory (ell1, ell2), else the same mesh
+    if not isinstance(meshes, tuple):
+        meshes = (meshes,) * len(fkp_field)
+    fkp_field = tuple(_read_mesh_to_fkp(_fkp_field, mesh) for _fkp_field, mesh in zip(fkp_field, meshes, strict=True))
+    del meshes
     return fkp_field
 
 
@@ -1000,7 +1002,7 @@ def mock_survey_catalog(
     # Field identifiers for the analytic shot noise
     fields: tuple[int, int] | None = None,
 ) -> list[Mesh2SpectrumPoles]:
-    """
+    r"""
     Get the power spectrum of a mock survey given an input theory, a seed and a set of observational effects.
 
     Parameters
@@ -1008,7 +1010,9 @@ def mock_survey_catalog(
     *fkp_fields : FKPField | tuple[FKPField, FKPField]
         FKP fields containing data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should also be randoms), but the FKP field serves to designate data and randoms amongst the original randoms. One field per desired output power spectrum. Example: NGC and SGC can be provided as two separate FKP fields, to get two output spectra. Pass several **tuples** of FKP fields to compute cross-spectra, for example (LRG_NGC, ELG_NGC) and (LRG_SGC, ELG_SGC) to get the LRGxELG cross-spectra in NGC and SGC.
     theory : ObservableTree
-        Fiducial theoretical power spectrum for the mock survey.
+        Fiducial theoretical power spectrum for the mock survey: plane-parallel multipoles ``ells = (0, 2, 4)``, or, for cross-spectra with ``los = "local"``,
+        :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, which also specifies :math:`A_{02} \neq A_{20}`;
+        see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     seed : jax.Array
         Random seed for the mock survey mesh generation.
     los : Literal["local", "x", "y", "z"]
@@ -1139,16 +1143,19 @@ def mock_survey_catalog(
         keys = jax.random.split(seed, len(fkp_fields))
         fkp_fields = tuple(_read_data(fkp_field, theory, key, los, unitary_amplitude) for fkp_field, key in zip(fkp_fields, keys, strict=True))
         # fkp_field can be a tuple, but the same key will be used for all fields in the tuple, which is what we want since they should be read from the same mesh
+        # (or, for a theory (ell1, ell2), from the same pair of meshes)
     else:
-        mesh = generate_anisotropic_gaussian_mesh(
+        meshes = generate_anisotropic_gaussian_mesh(
             meshattrs,
             poles=theory,
             seed=seed,
             los=los,
             unitary_amplitude=unitary_amplitude,
         )
-        fkp_fields = tuple(_read_mesh_to_fkp(fkp_field, mesh) for fkp_field in fkp_fields)
-        del mesh
+        if not isinstance(meshes, tuple):
+            meshes = (meshes,) * len(fkp_fields[0])
+        fkp_fields = tuple(tuple(_read_mesh_to_fkp(_fkp_field, mesh) for _fkp_field, mesh in zip(fkp_field, meshes, strict=True)) for fkp_field in fkp_fields)
+        del meshes
 
     # Length of list = 1 or 2 dependent on whether we are doing auto or cross spectra
     data_weights = [
@@ -1413,13 +1420,14 @@ def mock_survey_mesh(
     # regions
     ric_regions: list[jax.Array] | None = None,
 ) -> Mesh2SpectrumPoles:
-    """
+    r"""
     Apply mesh-based geometry forward modeling to a theoretical power spectrum.
 
     Parameters
     ----------
     theory : ObservableTree
-        Theory power spectrum to "observe".
+        Theory power spectrum to "observe": plane-parallel multipoles ``ells = (0, 2, 4)``, or, for the cross-correlation of the two selections
+        with ``los = "local"``, :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``; see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     seed : jnp.ndarray
         Jax random key for the mesh generation.
     los : Literal["local", "x", "y", "z"]
@@ -1462,9 +1470,12 @@ def mock_survey_mesh(
         los=los,
         unitary_amplitude=unitary_amplitude,
     )
-    mesh1 = _mesh * selection1
-    mesh2 = _mesh * selection2
+    # a cross-correlation theory (ell1, ell2) gives one mesh per selection
+    _mesh1, _mesh2 = _mesh if isinstance(_mesh, tuple) else (_mesh, _mesh)
     del _mesh
+    mesh1 = _mesh1 * selection1
+    mesh2 = _mesh2 * selection2
+    del _mesh1, _mesh2
     if gic:
         mesh1 -= selection1 * jnp.sum(mesh1) / jnp.sum(selection1)
         mesh2 -= selection2 * jnp.sum(mesh2) / jnp.sum(selection2)
