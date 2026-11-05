@@ -38,10 +38,7 @@ def get_window_geometry(
         Input bin edges, can be an :py:class:`lsstypes.ObservableTree` object with stored bins.
     theory_ells : tuple
         Input multipoles, can use ``theory_edges``'s ``ells`` if it is an :py:class:`lsstypes.ObservableTree`.
-        Pass ``(ells, "local")`` for the local theory line of sight, which the mocks of :py:mod:`desiwinds.forward` use with ``los = "local"``
-        (plain ``ells`` means the first point theory line of sight). For a cross-correlation, ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``
-        gives the window for :math:`A_{\ell_1 \ell_2}`, which does not assume :math:`A_{02} = A_{20}`; see
-        :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
+        Pass ``(ells, "local")`` for the local theory line of sight, which the mocks of :py:mod:`desiwinds.forward` use with ``los = "local"`` (plain ``ells`` means the first point theory line of sight). For a cross-correlation, ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]`` gives the window for :math:`A_{\ell_1 \ell_2}`, which does not assume :math:`A_{02} = A_{20}`; see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     binner : BinMesh2SpectrumPoles
         Binning operator to compute the output power spectrum.
     norm : jnp.ndarray

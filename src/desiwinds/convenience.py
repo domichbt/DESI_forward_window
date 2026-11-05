@@ -71,8 +71,7 @@ def fiducial_theory(edgesin: np.ndarray, cosmo: str | object = "DESI", bA: float
     edgesin : np.ndarray
         Edges of the bins for the power spectrum.
     cosmo : str | cosmoprimo.Cosmology, optional
-        Fiducial cosmology: name of a :py:mod:`cosmoprimo.fiducial` cosmology (e.g. "DESI", "Planck2018FullFlatLCDM"), computed with the Eisenstein-Hu engine,
-        or a cosmoprimo cosmology. By default "DESI".
+        Fiducial cosmology: name of a :py:mod:`cosmoprimo.fiducial` cosmology (e.g. "DESI", "Planck2018FullFlatLCDM"), computed with the Eisenstein-Hu engine, or a cosmoprimo cosmology. By default "DESI".
     bA : float, optional
         Linear bias of the (first) tracer, by default 1.5.
     bB : float | None, optional
@@ -82,9 +81,7 @@ def fiducial_theory(edgesin: np.ndarray, cosmo: str | object = "DESI", bA: float
     -------
     ObservableTree
         If ``bB`` is ``None``, power spectrum multipoles ``ells = (0, 2, 4)`` (the quadrupole scaled by 0.9, to keep the Gaussian mock covariance positive definite).
-        Else, the cross power spectrum with local line of sight, :math:`A_{\ell_1 \ell_2} = \beta^{A}_{\ell_1} \beta^{B}_{\ell_2} P_\mathrm{lin}`, with
-        :math:`\beta_0 = b + f / 3`, :math:`\beta_2 = 2 f / 3`, for ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, :math:`\ell_1` for the first tracer;
-        :math:`A_{02} - A_{20} = 2 f (b_A - b_B) P_\mathrm{lin} / 3` is not fixed by the plane-parallel multipoles.
+        Else, the cross power spectrum with local line of sight, :math:`A_{\ell_1 \ell_2} = \beta^{A}_{\ell_1} \beta^{B}_{\ell_2} P_\mathrm{lin}`, with :math:`\beta_0 = b + f / 3`, :math:`\beta_2 = 2 f / 3`, for ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, :math:`\ell_1` for the first tracer; :math:`A_{02} - A_{20} = 2 f (b_A - b_B) P_\mathrm{lin} / 3` is not fixed by the plane-parallel multipoles.
         See :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     """
     if isinstance(cosmo, str):
