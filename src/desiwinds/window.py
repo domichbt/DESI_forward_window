@@ -357,11 +357,10 @@ def get_fiducial_theory(theory: ObservableTree | Mesh2SpectrumPoles) -> Mesh2Spe
         return theory
     leaf = theory.get(types="basis")
     k, k_edges = np.asarray(leaf.values("k_theory")), np.asarray(leaf.values("k_edges_theory"))
-    poles = [
-        Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=value, ell=int(ell))
-        for ell, value in zip(leaf.values("ells_theory"), leaf.values("fiducial"), strict=True)
-    ]
-    return Mesh2SpectrumPoles(poles, ells=[int(ell) for ell in leaf.values("ells_theory")])
+    # ells: ints, or pairs (ell1, ell2) of a cross-spectrum theory with the local line of sight (stored as an (n_ells, 2) array)
+    ells = [tuple(int(e) for e in ell) if np.ndim(ell) else int(ell) for ell in np.asarray(leaf.values("ells_theory"))]
+    poles = [Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=value, ell=ell) for ell, value in zip(ells, leaf.values("fiducial"), strict=True)]
+    return Mesh2SpectrumPoles(poles, ells=ells)
 
 
 def project_window(

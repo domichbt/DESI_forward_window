@@ -99,6 +99,8 @@ def correct_selfpairs_analytic(
     WindowMatrix
         Corrected window.
     """
+    if unclustered_data_shotnoise == 0:  # e.g. the cross-spectrum of two tracers: no self-pairs
+        return window
     variance_derivative = get_density_variance_derivative(get_fiducial_theory(window.theory), mattrs)
     if hasattr(window.theory, "types"):
         variance_derivative = get_basis_vectors(window.theory) @ variance_derivative
@@ -107,19 +109,22 @@ def correct_selfpairs_analytic(
 
 
 def get_density_variance_derivative(theory: Mesh2SpectrumPoles, mattrs: MeshAttrs) -> np.ndarray:
-    """
+    r"""
     Return the derivative of the variance of the Gaussian mock density read at the particles with respect to each entry of ``theory``.
 
     The mocks paint the theory multipoles on the modes of the mesh ``mattrs`` as top-hat bins (lower edges of the bins, plus the
     last upper edge), and the density is read with a compensated CIC, whose variance boost for a mode is
     ``prod_a (1 - 2/3 sin^2(k_a H_a / 2)) / sinc^4(k_a H_a / 2)``. Only the monopole contributes, so the entries of the other
-    multipoles are zero.
+    multipoles are zero. Not defined for a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` (pairs of multipoles), which does not
+    fix the auto power of each field; the cross-spectrum of two tracers has no self-pairs anyway.
 
     Returns
     -------
     np.ndarray
         One value per theory entry, multipoles concatenated as ``theory.value()``.
     """
+    if any(np.ndim(ell) for ell in theory.ells):
+        raise NotImplementedError("the density variance of a cross-spectrum theory A_{ell1 ell2} (pairs of multipoles) is not defined")
     poles = list(theory)  # leaves, also for trees with more labels than ells (e.g. analytic windows)
     edges = np.asarray(poles[0].edges("k"))
     kin = np.append(edges[:, 0], edges[-1, 1])

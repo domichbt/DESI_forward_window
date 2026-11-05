@@ -122,6 +122,16 @@ fiducial_DESI = partial(fiducial_theory, cosmo="DESI")
 # Linear local-PNG + Kaiser basis vectors, see get_png_basis_vectors
 PNG_KAISER_BASIS_NAMES = ["plin_ell0", "g_plin_ell0", "g2_plin_ell0", "plin_ell2", "g_plin_ell2", "plin_ell4"]
 PNG_ALL_BASIS_NAMES = [f"{shape}_ell{ell}" for ell in (0, 2, 4) for shape in ("plin", "g_plin", "g2_plin")]
+#: Multipole pairs :math:`(\ell_1, \ell_2)` of a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` with the local line of sight (see :py:func:`fiducial_theory`).
+LOCAL_PAIRS = [(0, 0), (0, 2), (2, 0), (2, 2)]
+PNG_KAISER_PAIR_BASIS_NAMES = ["plin_ell00", "g_plin_ell00", "g2_plin_ell00", "plin_ell02", "g_plin_ell02", "plin_ell20", "g_plin_ell20", "plin_ell22"]
+PNG_ALL_PAIR_BASIS_NAMES = [f"{shape}_ell{ell1}{ell2}" for ell1, ell2 in LOCAL_PAIRS for shape in ("plin", "g_plin", "g2_plin")]
+
+
+def _basis_name_ell(name: str) -> int | tuple[int, int]:
+    """Multipole of a basis vector name ``{shape}_ell{ell}`` (``ell`` 0, 2 or 4) or ``{shape}_ell{ell1}{ell2}`` (pair)."""
+    ell = name.rsplit("_ell", 1)[1]
+    return (int(ell[0]), int(ell[1])) if len(ell) == 2 else int(ell)
 
 
 def get_png_basis_vectors(
@@ -133,6 +143,12 @@ def get_png_basis_vectors(
 ) -> tuple[np.ndarray, list[str]]:
     r"""
     Basis vectors of the linear local-PNG + Kaiser model at redshift ``z`` (by default 0), on the bins of ``theory``.
+
+    For a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` with the local line of sight (``theory.ells`` the pairs :py:data:`LOCAL_PAIRS`,
+    see :py:func:`fiducial_theory`), the vectors are on the pairs: :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_\mathrm{lin}`
+    with :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3` and :math:`\beta_2 = 2 f / 3` per tracer, hence the 8 vectors of
+    :py:data:`PNG_KAISER_PAIR_BASIS_NAMES` (coefficients :py:func:`get_png_kaiser_pair_coefficients`), or the 12 responses of
+    :py:data:`PNG_ALL_PAIR_BASIS_NAMES` with ``responses="all"``.
 
     The model is :math:`P(k, \mu) = (b_1 + b_\phi f_\mathrm{NL}\, g(k) + f \mu^2)^2 P_\mathrm{lin}(k)`, with
     :math:`g(k, z) = \sqrt{P_\phi(k) / P_{dd}(k, z)}` and :math:`P_\phi = \frac{9}{25} \frac{2 \pi^2}{k^3} P_\mathrm{prim}(k) / h^3`
@@ -147,7 +163,7 @@ def get_png_basis_vectors(
     ----------
     theory : ObservableTree
         Fiducial theory of the window (*e.g.* the input of :py:func:`desiwinds.window.get_window_basis`), whose bins (the same
-        for all multipoles, which must include 0, 2 and 4) define the vectors.
+        for all multipoles, which must include 0, 2 and 4, or be the pairs :py:data:`LOCAL_PAIRS`) define the vectors.
     cosmology : cosmoprimo.Cosmology, optional
         Cosmology of :math:`P_0`, :math:`P_\mathrm{prim}` and :math:`h`; use the same as the likelihood. By default
         ``cosmoprimo.fiducial.DESI(engine="camb")``.
@@ -178,8 +194,9 @@ def get_png_basis_vectors(
         cosmology = DESI(engine="camb")
     if responses not in ("kaiser", "all"):
         raise ValueError(f"Unknown responses {responses!r}, expected 'kaiser' or 'all'.")
-    ells = list(theory.ells)
-    missing = [ell for ell in (0, 2, 4) if ell not in ells]
+    ells = [tuple(int(e) for e in ell) if np.ndim(ell) else int(ell) for ell in theory.ells]
+    pairs = any(isinstance(ell, tuple) for ell in ells)
+    missing = [ell for ell in (LOCAL_PAIRS if pairs else (0, 2, 4)) if ell not in ells]
     if missing:
         raise ValueError(f"The theory has no multipoles {missing}.")
     _, k_edges = _common_k_bins(theory)
@@ -203,11 +220,13 @@ def get_png_basis_vectors(
         "g2_plin": np.where(at_zero, 0.0, np.sum(weights * g0**2 * pk0, axis=-1)),
     }
 
-    names = PNG_KAISER_BASIS_NAMES if responses == "kaiser" else PNG_ALL_BASIS_NAMES
+    if pairs:
+        names = PNG_KAISER_PAIR_BASIS_NAMES if responses == "kaiser" else PNG_ALL_PAIR_BASIS_NAMES
+    else:
+        names = PNG_KAISER_BASIS_NAMES if responses == "kaiser" else PNG_ALL_BASIS_NAMES
     vectors = np.zeros((len(names), len(ells), low.size))
     for ivector, name in enumerate(names):
-        shape, ell = name.rsplit("_ell", 1)
-        vectors[ivector, ells.index(int(ell))] = shapes[shape]
+        vectors[ivector, ells.index(_basis_name_ell(name))] = shapes[name.rsplit("_ell", 1)[0]]
     return vectors.reshape(len(names), -1), list(names)
 
 
@@ -241,6 +260,44 @@ def get_png_kaiser_coefficients(b1, bphi_fnl, f, growth_ratio):
             r**2 * (4.0 / 3.0 * b1 * f + 4.0 / 7.0 * f**2),
             r * 4.0 / 3.0 * bphi_fnl * f,
             r**2 * 8.0 / 35.0 * f**2,
+        ]
+    )
+
+
+def get_png_kaiser_pair_coefficients(b1, bphi_fnl, f, growth_ratio):
+    r"""
+    Coefficients of the ``"kaiser"`` pair basis vectors of :py:func:`get_png_basis_vectors` (:py:data:`PNG_KAISER_PAIR_BASIS_NAMES`), in the same order.
+
+    For the cross-spectrum of tracers :math:`X` and :math:`Y`, :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_{dd}` with
+    :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3`, :math:`\beta_2 = 2 f / 3`; in terms of the basis shapes, with
+    :math:`c = r b_1`, :math:`e = r f`, :math:`B = b_\phi f_\mathrm{NL}`: :math:`\beta_0 \sqrt{P_{dd}} = (c + B g_0 + e / 3) \sqrt{P_0}`.
+
+    Parameters
+    ----------
+    b1, bphi_fnl : tuple
+        Linear bias and :math:`b_\phi f_\mathrm{NL}` of the two tracers :math:`(X, Y)`, at :math:`z_\mathrm{eff}`.
+    f, growth_ratio : float, jax.Array or tuple
+        Growth rate and :math:`r(z_\mathrm{eff})` from :py:func:`get_growth_ratio`, one for both tracers or one per tracer.
+
+    Returns
+    -------
+    jax.Array
+        The 8 coefficients.
+    """
+    f = f if isinstance(f, tuple) else (f, f)
+    r = growth_ratio if isinstance(growth_ratio, tuple) else (growth_ratio, growth_ratio)
+    (cX, cY), (eX, eY), (BX, BY) = [ri * bi for ri, bi in zip(r, b1)], [ri * fi for ri, fi in zip(r, f)], bphi_fnl
+    aX, aY = cX + eX / 3.0, cY + eY / 3.0
+    return jnp.stack(
+        [
+            aX * aY,
+            BX * aY + BY * aX,
+            BX * BY * jnp.ones_like(aX),
+            aX * 2.0 * eY / 3.0,
+            BX * 2.0 * eY / 3.0,
+            2.0 * eX / 3.0 * aY,
+            2.0 * eX / 3.0 * BY,
+            4.0 * eX * eY / 9.0,
         ]
     )
 

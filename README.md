@@ -84,3 +84,7 @@ For the linear local-PNG + Kaiser model, `desiwinds.convenience.get_png_basis_ve
 `get_png_kaiser_coefficients` the matching coefficients from (b1, b_phi f_NL, f) at the effective redshift. Shapes at z = 0 with
 `get_growth_ratio(cosmology, z_eff)` keep the window independent of redshift, up to the scale-dependent growth from massive
 neutrinos (≤ 0.6% for 0.06 eV at z ≤ 2.5); shapes built at `z = z_eff` are exact.
+For a cross-spectrum with the local line of sight and a theory A_{l1 l2} (`fiducial_theory(edges, bA=..., bB=...)`, pairs
+(0, 0), (0, 2), (2, 0), (2, 2), A02 ≠ A20), the vectors are on the pairs (8 for Kaiser, `PNG_KAISER_PAIR_BASIS_NAMES`) and
+`get_png_kaiser_pair_coefficients` gives their coefficients from the biases of the two tracers. This needs a jaxpower whose
+`generate_anisotropic_gaussian_mesh` accepts pairs (ell1, ell2).
