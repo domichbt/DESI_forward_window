@@ -1464,8 +1464,8 @@ def mock_survey_mesh(
     mesh2 = _mesh2 * selection2
     del _mesh1, _mesh2
     if gic:
-        mesh1 -= selection1 * jnp.sum(mesh1) / jnp.sum(selection1)
-        mesh2 -= selection2 * jnp.sum(mesh2) / jnp.sum(selection2)
+        mesh1 -= selection1 * mesh1.sum() / selection1.sum()
+        mesh2 -= selection2 * mesh2.sum() / selection2.sum()
     if ric:
         dmin = jnp.min(mattrs.boxcenter - mattrs.boxsize / 2.0)
         dmax = (1.0 + 1e-9) * jnp.sqrt(jnp.sum((mattrs.boxcenter + mattrs.boxsize / 2.0) ** 2))
