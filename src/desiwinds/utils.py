@@ -511,20 +511,23 @@ def _prepare_templates(
     for ireg, (data_sel, rand_sel, lower_tails, upper_tails) in enumerate(zip(data_regions, randoms_regions, regions_lower_tails, regions_upper_tails, strict=True)):
         bin_edges = jnp.linspace(start=lower_tails - bin_margin, stop=upper_tails + bin_margin, num=n_bins + 1)
 
+        # Explicit reciprocal: XLA (seen with jax 0.12) may rewrite x / c into x * (1 / c), which changes results by 1e-16 between the sharded and unsharded paths. Doing it by hand makes both paths identical.
+        inv_width = 1.0 / (bin_edges[-1, :] - bin_edges[0, :])
+
         non_extreme_data = jnp.all((data_templates >= lower_tails) & (data_templates <= upper_tails), axis=1)
         non_extreme_rand = jnp.all((randoms_templates >= lower_tails) & (randoms_templates <= upper_tails), axis=1)
 
         data_templates_normalized = data_templates_normalized.at[1:, :].set(
             jnp.where(
                 data_sel[None, :],
-                ((data_templates - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T,
+                ((data_templates - bin_edges[0, :]) * inv_width).T,
                 data_templates_normalized[1:, :],
             )
         )
         rand_templates_normalized = rand_templates_normalized.at[1:, :].set(
             jnp.where(
                 rand_sel[None, :],
-                ((randoms_templates - bin_edges[0, :]) / (bin_edges[-1, :] - bin_edges[0, :])).T,
+                ((randoms_templates - bin_edges[0, :]) * inv_width).T,
                 rand_templates_normalized[1:, :],
             )
         )
