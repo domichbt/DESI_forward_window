@@ -936,6 +936,22 @@ def _get_pk_nogic(*fkp_fields, alphas, fkp_norm, binner, los, fields=None):
     return pk.clone(norm=fkp_norm, num_shotnoise=num_shotnoise)
 
 
+def _get_data_shotnoise(*fkp_fields, fkp_norm, binner, fields=None):
+    """
+    Data-only shot noise: the self-pair sum of the data particles alone (with the pair weights of the spectrum), over the normalization.
+
+    With a monopole in ``binner``, this is its ``num_shotnoise`` over its normalization. Without (*e.g.* the ell = 2 spectrum of OQE weights, computed on its own), jaxpower assigns no shot noise to the multipoles, so the self-pair sum is computed directly and divided by the normalization of the first multipole.
+    """
+    data = [fkp_field.data for fkp_field in fkp_fields]
+    ells = list(binner.ells)
+    if 0 in ells:
+        num_shotnoise = jnp.ravel(compute_fkp2_shotnoise(*data, bin=binner, fields=fields)[ells.index(0)])[0]
+        return num_shotnoise.real / jnp.ravel(jnp.asarray(fkp_norm))[ells.index(0)]
+    if getattr(binner, "klimit", None) is not None:
+        raise NotImplementedError("Data-only shot noise without a monopole is not implemented for binners with klimit.")
+    return jnp.real(compute_fkp2_shotnoise(*data, fields=fields)) / jnp.ravel(jnp.asarray(fkp_norm))[0]
+
+
 def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
     if estimator_weights:
         return fkp_field.clone(
@@ -1005,7 +1021,8 @@ def mock_survey_catalog(
     meshattrs: MeshAttrs | None = None,
     # Field identifiers for the analytic shot noise
     fields: tuple[int, int] | None = None,
-) -> list[Mesh2SpectrumPoles]:
+    return_data_shotnoise: bool = False,
+) -> list[Mesh2SpectrumPoles] | tuple[list[Mesh2SpectrumPoles], list[jax.Array]]:
     r"""
     Get the power spectrum of a mock survey given an input theory, a seed and a set of observational effects.
 
@@ -1050,11 +1067,15 @@ def mock_survey_catalog(
         ``estimator_weights=("weight_optimal_1", "weight_optimal_2")`` applied to one tracer's field duplicated for
         the cross term): without this, the analytic shot noise for that pair is silently 0, since jaxpower has no
         other way to know the two fields share positions.
+    return_data_shotnoise : bool, optional
+        If ``True``, also return the data-only monopole shot noise of each output power spectrum (``num_shotnoise`` of the data particles alone, with their final weights, divided by the monopole normalization). The mock data are randoms weighted by ``1 + delta``, so their self-pairs carry a white noise that depends on the input theory; see :py:func:`desiwinds.post.correct_selfpairs`. Must be static when jitting. By default ``False``.
 
     Returns
     -------
     list[Mesh2SpectrumPoles]
         Power spectra of one realization of the mock survey; one for each FKP field.
+    list[jax.Array]
+        Only if ``return_data_shotnoise``: the data-only monopole shot noise of each power spectrum.
 
     Notes
     -----
@@ -1182,6 +1203,11 @@ def mock_survey_catalog(
             _get_pk_nogic(*fkp_field, alphas=alpha_gic, fkp_norm=fkp_norm, binner=binner, los=los, fields=fields)
             for fkp_field, alpha_gic, fkp_norm in zip(fkp_fields, alphas_gic, fkp_norms, strict=True)
         ]
+    if return_data_shotnoise:
+        data_shotnoises = [
+            _get_data_shotnoise(*fkp_field, fkp_norm=fkp_norm, binner=binner, fields=fields) for fkp_field, fkp_norm in zip(fkp_fields, fkp_norms, strict=True)
+        ]
+        return pks, data_shotnoises
     return pks
 
 

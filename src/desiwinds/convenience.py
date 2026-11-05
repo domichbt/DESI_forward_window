@@ -119,6 +119,184 @@ fiducial_planck_2018 = partial(fiducial_theory, cosmo="Planck2018FullFlatLCDM")
 fiducial_DESI = partial(fiducial_theory, cosmo="DESI")
 
 
+# Linear local-PNG + Kaiser basis vectors, see get_png_basis_vectors
+PNG_KAISER_BASIS_NAMES = ["plin_ell0", "g_plin_ell0", "g2_plin_ell0", "plin_ell2", "g_plin_ell2", "plin_ell4"]
+PNG_ALL_BASIS_NAMES = [f"{shape}_ell{ell}" for ell in (0, 2, 4) for shape in ("plin", "g_plin", "g2_plin")]
+#: Multipole pairs :math:`(\ell_1, \ell_2)` of a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` with the local line of sight (see :py:func:`fiducial_theory`).
+LOCAL_PAIRS = [(0, 0), (0, 2), (2, 0), (2, 2)]
+PNG_KAISER_PAIR_BASIS_NAMES = ["plin_ell00", "g_plin_ell00", "g2_plin_ell00", "plin_ell02", "g_plin_ell02", "plin_ell20", "g_plin_ell20", "plin_ell22"]
+PNG_ALL_PAIR_BASIS_NAMES = [f"{shape}_ell{ell1}{ell2}" for ell1, ell2 in LOCAL_PAIRS for shape in ("plin", "g_plin", "g2_plin")]
+
+
+def _basis_name_ell(name: str) -> int | tuple[int, int]:
+    """Multipole of a basis vector name ``{shape}_ell{ell}`` (``ell`` 0, 2 or 4) or ``{shape}_ell{ell1}{ell2}`` (pair)."""
+    ell = name.rsplit("_ell", 1)[1]
+    return (int(ell[0]), int(ell[1])) if len(ell) == 2 else int(ell)
+
+
+def get_png_basis_vectors(
+    theory: ObservableTree,
+    cosmology=None,
+    responses: Literal["kaiser", "all"] = "kaiser",
+    k_average: Literal["modes", "center"] = "modes",
+    z: float = 0.0,
+) -> tuple[np.ndarray, list[str]]:
+    r"""
+    Basis vectors of the linear local-PNG + Kaiser model at redshift ``z`` (by default 0), on the bins of ``theory``.
+
+    For a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` with the local line of sight (``theory.ells`` the pairs :py:data:`LOCAL_PAIRS`, see :py:func:`fiducial_theory`), the vectors are on the pairs: :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_\mathrm{lin}` with :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3` and :math:`\beta_2 = 2 f / 3` per tracer, hence the 8 vectors of :py:data:`PNG_KAISER_PAIR_BASIS_NAMES` (coefficients :py:func:`get_png_kaiser_pair_coefficients`), or the 12 responses of :py:data:`PNG_ALL_PAIR_BASIS_NAMES` with ``responses="all"``.
+
+    The model is :math:`P(k, \mu) = (b_1 + b_\phi f_\mathrm{NL}\, g(k) + f \mu^2)^2 P_\mathrm{lin}(k)`, with :math:`g(k, z) = \sqrt{P_\phi(k) / P_{dd}(k, z)}` and :math:`P_\phi = \frac{9}{25} \frac{2 \pi^2}{k^3} P_\mathrm{prim}(k) / h^3` (the ``'prim'`` method of desilike's PNG theory). As :math:`P_{dd}(k, z) \simeq r(z)^2 P_0(k)` and :math:`g(k, z) \simeq g_0(k) / r(z)`, with :math:`r` from :py:func:`get_growth_ratio`, the shapes :math:`P_0`, :math:`g_0 P_0` and :math:`g_0^2 P_0` at ``z = 0`` give a window that does not depend on redshift, the powers of :math:`r(z_\mathrm{eff})` going into the coefficients (see :py:func:`get_png_kaiser_coefficients`). This is exact up to the scale dependence of the growth of ``delta_cb`` from massive neutrinos: with 0.06 eV, :math:`P_{dd}(k, z) / (r^2 P_0)` departs from 1 by up to 0.2% (z = 0.8), 0.4% (z = 1.5) and 0.6% (z = 2.5) over :math:`0.01 < k < 0.16\ h/\mathrm{Mpc}`. Shapes at ``z = z_eff`` with ``growth_ratio = 1`` are exact.
+
+    Parameters
+    ----------
+    theory : ObservableTree
+        Fiducial theory of the window (*e.g.* the input of :py:func:`desiwinds.window.get_window_basis`), whose bins (the same for all multipoles, which must include 0, 2 and 4, or be the pairs :py:data:`LOCAL_PAIRS`) define the vectors.
+    cosmology : cosmoprimo.Cosmology, optional
+        Cosmology of :math:`P_0`, :math:`P_\mathrm{prim}` and :math:`h`; use the same as the likelihood. By default ``cosmoprimo.fiducial.DESI(engine="camb")``.
+    responses : Literal["kaiser", "all"], optional
+        ``"kaiser"``: the 6 vectors of the Kaiser model (:py:data:`PNG_KAISER_BASIS_NAMES`); ``"all"``: the 9 responses :math:`\{P_0, g_0 P_0, g_0^2 P_0\} \times \{\ell = 0, 2, 4\}` (:py:data:`PNG_ALL_BASIS_NAMES`), for any model linear in them.
+    k_average : Literal["modes", "center"], optional
+        Value of each vector in a theory bin, which the Gaussian mocks paint as a constant: ``"modes"``, the average over the bin weighted by :math:`k^2` (the density of Fourier modes); ``"center"``, the value at the bin center. By default ``"modes"``.
+    z : float, optional
+        Redshift of the shapes :math:`P_{dd}(k, z)` and :math:`g(k, z)`. By default 0.
+
+    Returns
+    -------
+    tuple[np.ndarray, list[str]]
+        Basis vectors of shape ``(n_vectors, n_theory)`` (multipoles concatenated as in ``theory.value()``) and their names.
+
+    Notes
+    -----
+    In bins starting at :math:`k = 0` (with the usual edges, the bin of the :math:`k = 0` mode only, which the integral constraints remove), the :math:`g_0 P_0` and :math:`g_0^2 P_0` shapes, which diverge at :math:`k \to 0`, are set to 0.
+    """
+    from .window import _common_k_bins
+
+    if cosmology is None:
+        from cosmoprimo.fiducial import DESI
+
+        cosmology = DESI(engine="camb")
+    if responses not in ("kaiser", "all"):
+        raise ValueError(f"Unknown responses {responses!r}, expected 'kaiser' or 'all'.")
+    ells = [tuple(int(e) for e in ell) if np.ndim(ell) else int(ell) for ell in theory.ells]
+    pairs = any(isinstance(ell, tuple) for ell in ells)
+    missing = [ell for ell in (LOCAL_PAIRS if pairs else (0, 2, 4)) if ell not in ells]
+    if missing:
+        raise ValueError(f"The theory has no multipoles {missing}.")
+    _, k_edges = _common_k_bins(theory)
+    low, high = k_edges[:, 0], k_edges[:, 1]
+
+    # k at which to evaluate the shapes in each bin, and the weights of the average
+    if k_average == "modes":
+        nodes, weights = np.polynomial.legendre.leggauss(32)
+        k = low[:, None] + (high - low)[:, None] * (nodes[None, :] + 1) / 2
+        weights = weights[None, :] * k**2
+        weights /= weights.sum(axis=-1, keepdims=True)
+    elif k_average == "center":
+        k, weights = ((low + high) / 2)[:, None], np.ones((low.size, 1))
+    else:
+        raise ValueError(f"Unknown k_average {k_average!r}, expected 'modes' or 'center'.")
+    pk0, g0 = _png_shapes(cosmology, np.where(k > 0, k, 1.0), z=z)
+    at_zero = low <= 0.0
+    shapes = {
+        "plin": np.sum(weights * pk0, axis=-1),
+        "g_plin": np.where(at_zero, 0.0, np.sum(weights * g0 * pk0, axis=-1)),
+        "g2_plin": np.where(at_zero, 0.0, np.sum(weights * g0**2 * pk0, axis=-1)),
+    }
+
+    if pairs:
+        names = PNG_KAISER_PAIR_BASIS_NAMES if responses == "kaiser" else PNG_ALL_PAIR_BASIS_NAMES
+    else:
+        names = PNG_KAISER_BASIS_NAMES if responses == "kaiser" else PNG_ALL_BASIS_NAMES
+    vectors = np.zeros((len(names), len(ells), low.size))
+    for ivector, name in enumerate(names):
+        vectors[ivector, ells.index(_basis_name_ell(name))] = shapes[name.rsplit("_ell", 1)[0]]
+    return vectors.reshape(len(names), -1), list(names)
+
+
+def get_png_kaiser_coefficients(b1, bphi_fnl, f, growth_ratio):
+    r"""
+    Coefficients of the ``"kaiser"`` basis vectors of :py:func:`get_png_basis_vectors`, in the same order.
+
+    The prediction at the effective redshift :math:`z_\mathrm{eff}` is ``window.value() @ coefficients``, with the window computed on these vectors.
+
+    Parameters
+    ----------
+    b1, f : float or jax.Array
+        Linear bias and growth rate at :math:`z_\mathrm{eff}`.
+    bphi_fnl : float or jax.Array
+        :math:`b_\phi f_\mathrm{NL}` at :math:`z_\mathrm{eff}`.
+    growth_ratio : float or jax.Array
+        :math:`r(z_\mathrm{eff})` from :py:func:`get_growth_ratio`.
+
+    Returns
+    -------
+    jax.Array
+        The 6 coefficients.
+    """
+    r = growth_ratio
+    return jnp.stack(
+        [
+            r**2 * (b1**2 + 2.0 / 3.0 * b1 * f + f**2 / 5.0),
+            r * (2.0 * b1 + 2.0 / 3.0 * f) * bphi_fnl,
+            bphi_fnl**2 * jnp.ones_like(r),
+            r**2 * (4.0 / 3.0 * b1 * f + 4.0 / 7.0 * f**2),
+            r * 4.0 / 3.0 * bphi_fnl * f,
+            r**2 * 8.0 / 35.0 * f**2,
+        ]
+    )
+
+
+def get_png_kaiser_pair_coefficients(b1, bphi_fnl, f, growth_ratio):
+    r"""
+    Coefficients of the ``"kaiser"`` pair basis vectors of :py:func:`get_png_basis_vectors` (:py:data:`PNG_KAISER_PAIR_BASIS_NAMES`), in the same order.
+
+    For the cross-spectrum of tracers :math:`X` and :math:`Y`, :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_{dd}` with :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3`, :math:`\beta_2 = 2 f / 3`; in terms of the basis shapes, with :math:`c = r b_1`, :math:`e = r f`, :math:`B = b_\phi f_\mathrm{NL}`: :math:`\beta_0 \sqrt{P_{dd}} = (c + B g_0 + e / 3) \sqrt{P_0}`.
+
+    Parameters
+    ----------
+    b1, bphi_fnl : tuple
+        Linear bias and :math:`b_\phi f_\mathrm{NL}` of the two tracers :math:`(X, Y)`, at :math:`z_\mathrm{eff}`.
+    f, growth_ratio : float, jax.Array or tuple
+        Growth rate and :math:`r(z_\mathrm{eff})` from :py:func:`get_growth_ratio`, one for both tracers or one per tracer.
+
+    Returns
+    -------
+    jax.Array
+        The 8 coefficients.
+    """
+    f = f if isinstance(f, tuple) else (f, f)
+    r = growth_ratio if isinstance(growth_ratio, tuple) else (growth_ratio, growth_ratio)
+    (cX, cY), (eX, eY), (BX, BY) = [ri * bi for ri, bi in zip(r, b1)], [ri * fi for ri, fi in zip(r, f)], bphi_fnl
+    aX, aY = cX + eX / 3.0, cY + eY / 3.0
+    return jnp.stack(
+        [
+            aX * aY,
+            BX * aY + BY * aX,
+            BX * BY * jnp.ones_like(aX),
+            aX * 2.0 * eY / 3.0,
+            BX * 2.0 * eY / 3.0,
+            2.0 * eX / 3.0 * aY,
+            2.0 * eX / 3.0 * BY,
+            4.0 * eX * eY / 9.0,
+        ]
+    )
+
+
+def get_growth_ratio(cosmology, z: float, k: float = 1e-3) -> float:
+    r"""Return :math:`r(z) = \sqrt{P_{dd}(k, z) / P_{dd}(k, 0)}` at large scales: the factor between the :math:`z = 0` PNG basis shapes and redshift :math:`z`."""
+    pk = cosmology.get_fourier().pk_interpolator(of="delta_cb")
+    return float(np.sqrt(pk.to_1d(z=z)(k) / pk.to_1d(z=0.0)(k)))
+
+
+def _png_shapes(cosmology, k: np.ndarray, z: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    r"""Return :math:`P_{dd}(k, z)` (``delta_cb``) and :math:`g(k, z) = \sqrt{P_\phi / P_{dd}}`, ``k`` in h/Mpc."""
+    pk0 = cosmology.get_fourier().pk_interpolator(of="delta_cb").to_1d(z=z)(k)
+    pk_prim = cosmology.get_primordial(mode="scalar").pk_interpolator()(k)
+    pphi = 9.0 / 25.0 * 2.0 * np.pi**2 / k**3 * pk_prim / cosmology.h**3
+    return pk0, np.sqrt(pphi / pk0)
+
+
 def get_sysmap(map_path: str | os.PathLike, region: str, need_maps: list[str] | None = None, ebv_path: str | None = None) -> Table:
     """
     Return a table containing the usual systematics templates for DESI.

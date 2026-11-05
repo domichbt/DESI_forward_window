@@ -59,3 +59,21 @@ with create_sharding_mesh() as sharding_mesh:
 
 jax.distributed.shutdown()
 ```
+
+### Windows and post-processing
+
+Windows are Jacobians of the forward model at a fiducial theory, averaged over realizations (`desiwinds.window`):
+
+- `get_window_spikes` / `get_windows_spikes`: one column per theory bin;
+- `get_window_basis`: one column per basis vector (any power spectrum shape, given on the theory bins), at a cost that scales with the number of vectors. The window theory (`get_basis_theory`) stores the vectors and the fiducial theory at which the derivative is taken; read them back with `get_basis_vectors` and `get_fiducial_theory`, and project an analytic window onto the same vectors with `project_window`.
+
+With `return_shotnoise_jacobians=True`, they also return the Jacobians of the estimated shot noise.
+`desiwinds.post` then post-processes a window run, in this order:
+
+1. `average_windows` over the realizations;
+2. `correct_selfpairs` (or `correct_selfpairs_analytic` without the Jacobians): the mock data are randoms weighted by `1 + delta`, so their self-pairs add a white noise linear in the theory, which the Jacobian puts into the window; this removes it, given the white-noise template of the same effects;
+3. `apply_control_variate` with the analytic geometry window (`get_window_geometry`).
+
+For the linear local-PNG + Kaiser model, `desiwinds.convenience.get_png_basis_vectors` gives the basis vectors \{P, gP, g²P\} × multipoles on the window's theory bins (6 for Kaiser, or all 9 responses), with their names, and `get_png_kaiser_coefficients` the matching coefficients from (b1, b_phi f_NL, f) at the effective redshift.
+Shapes at z = 0 with `get_growth_ratio(cosmology, z_eff)` keep the window independent of redshift, up to the scale-dependent growth from massive neutrinos (≤ 0.6% for 0.06 eV at z ≤ 2.5); shapes built at `z = z_eff` are exact.
+For a cross-spectrum with the local line of sight and a theory A_{l1 l2} (`fiducial_theory(edges, bA=..., bB=...)`, pairs (0, 0), (0, 2), (2, 0), (2, 2), A02 ≠ A20), the vectors are on the pairs (8 for Kaiser, `PNG_KAISER_PAIR_BASIS_NAMES`) and `get_png_kaiser_pair_coefficients` gives their coefficients from the biases of the two tracers.
