@@ -141,3 +141,19 @@ def test_project_window_on_sub_theory(cosmology, theory):
     assert np.allclose(get_basis_vectors(projected.theory), vectors)
     with pytest.raises(ValueError):
         project_window(window, vectors, basis_theory=sub.map(lambda pole: pole.clone(k_edges=np.asarray(pole.edges("k")) * 1.01)))
+
+
+@pytest.mark.parametrize("pairs", [False, True])
+def test_shotnoise_vector(cosmology, theory, pairs):
+    """``shotnoise=True`` appends a constant on the monopole (on A00 for pairs), and leaves the other vectors unchanged."""
+    from desiwinds.convenience import LOCAL_PAIRS, PNG_SHOTNOISE_BASIS_NAME, PNG_SHOTNOISE_PAIR_BASIS_NAME
+
+    if pairs:
+        theory = lss.ObservableTree([lss.ObservableLeaf(k=pole.coords("k"), k_edges=pole.edges("k"), value=np.ones(pole.size), coords=["k"]) for pole in list(theory)[:1] * 4], ells=LOCAL_PAIRS)
+    without, names = get_png_basis_vectors(theory, cosmology=cosmology)
+    vectors, names_sn = get_png_basis_vectors(theory, cosmology=cosmology, shotnoise=True)
+    assert names_sn == names + [PNG_SHOTNOISE_PAIR_BASIS_NAME if pairs else PNG_SHOTNOISE_BASIS_NAME]
+    assert np.array_equal(vectors[:-1], without)
+    blocks = _blocks(vectors[-1:], theory)[0]
+    assert np.all(blocks[0] == 1.0) and np.all(blocks[1:] == 0.0)
+

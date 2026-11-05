@@ -126,6 +126,9 @@ PNG_ALL_BASIS_NAMES = [f"{shape}_ell{ell}" for ell in (0, 2, 4) for shape in ("p
 LOCAL_PAIRS = [(0, 0), (0, 2), (2, 0), (2, 2)]
 PNG_KAISER_PAIR_BASIS_NAMES = ["plin_ell00", "g_plin_ell00", "g2_plin_ell00", "plin_ell02", "g_plin_ell02", "plin_ell20", "g_plin_ell20", "plin_ell22"]
 PNG_ALL_PAIR_BASIS_NAMES = [f"{shape}_ell{ell1}{ell2}" for ell1, ell2 in LOCAL_PAIRS for shape in ("plin", "g_plin", "g2_plin")]
+#: Names of the constant monopole (resp. constant :math:`A_{00}`) basis vector of :py:func:`get_png_basis_vectors` with ``shotnoise=True``, whose coefficient is the shot noise.
+PNG_SHOTNOISE_BASIS_NAME = "const_ell0"
+PNG_SHOTNOISE_PAIR_BASIS_NAME = "const_ell00"
 
 
 def _basis_name_ell(name: str) -> int | tuple[int, int]:
@@ -140,6 +143,7 @@ def get_png_basis_vectors(
     responses: Literal["kaiser", "all"] = "kaiser",
     k_average: Literal["modes", "center"] = "modes",
     z: float = 0.0,
+    shotnoise: bool = False,
 ) -> tuple[np.ndarray, list[str]]:
     r"""
     Basis vectors of the linear local-PNG + Kaiser model at redshift ``z`` (by default 0), on the bins of ``theory``.
@@ -160,6 +164,8 @@ def get_png_basis_vectors(
         Value of each vector in a theory bin, which the Gaussian mocks paint as a constant: ``"modes"``, the average over the bin weighted by :math:`k^2` (the density of Fourier modes); ``"center"``, the value at the bin center. By default ``"modes"``.
     z : float, optional
         Redshift of the shapes :math:`P_{dd}(k, z)` and :math:`g(k, z)`. By default 0.
+    shotnoise : bool, optional
+        If ``True``, append a constant monopole (constant :math:`A_{00}` for pairs), :py:data:`PNG_SHOTNOISE_BASIS_NAME` (:py:data:`PNG_SHOTNOISE_PAIR_BASIS_NAME`), whose coefficient is the shot noise (*e.g.* :math:`s_{n,0} / \bar{n}`). By default ``False``.
 
     Returns
     -------
@@ -208,6 +214,9 @@ def get_png_basis_vectors(
         names = PNG_KAISER_PAIR_BASIS_NAMES if responses == "kaiser" else PNG_ALL_PAIR_BASIS_NAMES
     else:
         names = PNG_KAISER_BASIS_NAMES if responses == "kaiser" else PNG_ALL_BASIS_NAMES
+    if shotnoise:
+        names = names + [PNG_SHOTNOISE_PAIR_BASIS_NAME if pairs else PNG_SHOTNOISE_BASIS_NAME]
+        shapes["const"] = np.ones_like(low)
     vectors = np.zeros((len(names), len(ells), low.size))
     for ivector, name in enumerate(names):
         vectors[ivector, ells.index(_basis_name_ell(name))] = shapes[name.rsplit("_ell", 1)[0]]
