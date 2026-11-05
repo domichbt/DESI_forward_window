@@ -1,6 +1,7 @@
 """Convenience and utility functions to call on in scripts."""
 
 import os
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -61,76 +62,61 @@ def get_randoms(
         return positions, weights
 
 
-def fiducial_planck_2018(edgesin: np.ndarray) -> ObservableTree:
-    """
-    Get the power spectrum of Planck 2018 flat LCDM cosmology, with required k and Kaiser RSD.
+def fiducial_theory(edgesin: np.ndarray, cosmo: str | object = "DESI", bA: float = 1.5, bB: float | None = None) -> ObservableTree:
+    r"""
+    Get the linear power spectrum of a fiducial cosmology at :math:`z = 1`, with Kaiser RSD (growth rate :math:`f = 0.8`).
 
     Parameters
     ----------
     edgesin : np.ndarray
         Edges of the bins for the power spectrum.
+    cosmo : str | cosmoprimo.Cosmology, optional
+        Fiducial cosmology: name of a :py:mod:`cosmoprimo.fiducial` cosmology (e.g. "DESI", "Planck2018FullFlatLCDM"), computed with the Eisenstein-Hu engine, or a cosmoprimo cosmology. By default "DESI".
+    bA : float, optional
+        Linear bias of the (first) tracer, by default 1.5.
+    bB : float | None, optional
+        Linear bias of the second tracer, for a cross power spectrum. If ``None`` (default), the auto power spectrum of the tracer with bias ``bA``.
 
     Returns
     -------
     ObservableTree
-        Matter power spectrum with Kaiser RSD based on the Planck 2018 flat LCDM cosmology.
+        If ``bB`` is ``None``, power spectrum multipoles ``ells = (0, 2, 4)`` (the quadrupole scaled by 0.9, to keep the Gaussian mock covariance positive definite).
+        Else, the cross power spectrum with local line of sight, :math:`A_{\ell_1 \ell_2} = \beta^{A}_{\ell_1} \beta^{B}_{\ell_2} P_\mathrm{lin}`, with :math:`\beta_0 = b + f / 3`, :math:`\beta_2 = 2 f / 3`, for ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, :math:`\ell_1` for the first tracer; :math:`A_{02} - A_{20} = 2 f (b_A - b_B) P_\mathrm{lin} / 3` is not fixed by the plane-parallel multipoles.
+        See :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     """
-    from cosmoprimo.fiducial import Planck2018FullFlatLCDM
+    if isinstance(cosmo, str):
+        from cosmoprimo import fiducial
+
+        cosmo = getattr(fiducial, cosmo)(engine="eisenstein_hu")
 
     # Use a basic linear P(k) with RSD multipoles for the fiducial cosmology
-    cosmo = Planck2018FullFlatLCDM(engine="eisenstein_hu")
     pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.0)
 
     edgesin = np.column_stack([edgesin[:-1], edgesin[1:]])
 
     kin = np.mean(edgesin, axis=-1)
     pkin = pk(kin)
-    ells = (0, 2, 4)
+    f = 0.8
 
-    f, b = 0.8, 1.5
-    pkb = b**2 * pkin
-    beta = f / b
-    poles = [(1.0 + 2.0 / 3.0 * beta + 1.0 / 5.0 * beta**2) * pkb, 0.9 * (4.0 / 3.0 * beta + 4.0 / 7.0 * beta**2) * pkb, 8.0 / 35 * beta**2 * pkb]
+    if bB is None:
+        ells = (0, 2, 4)
+        pkb = bA**2 * pkin
+        beta = f / bA
+        poles = [(1.0 + 2.0 / 3.0 * beta + 1.0 / 5.0 * beta**2) * pkb, 0.9 * (4.0 / 3.0 * beta + 4.0 / 7.0 * beta**2) * pkb, 8.0 / 35 * beta**2 * pkb]
+    else:
+        ells = [(0, 0), (0, 2), (2, 0), (2, 2)]
+        betas = [{0: b + f / 3.0, 2: 2.0 * f / 3.0} for b in (bA, bB)]
+        poles = [betas[0][ell1] * betas[1][ell2] * pkin for ell1, ell2 in ells]
     poles = np.array(poles)
 
     theory = ObservableTree([ObservableLeaf(k=kin, k_edges=edgesin, value=pole, coords=["k"]) for pole in poles], ells=ells)
     return theory
 
 
-def fiducial_DESI(edgesin: np.ndarray) -> ObservableTree:
-    """
-    Get the power spectrum of Planck 2018 flat LCDM cosmology, with required k and Kaiser RSD.
-
-    Parameters
-    ----------
-    edgesin : np.ndarray
-        Edges of the bins for the power spectrum.
-
-    Returns
-    -------
-    ObservableTree
-        Matter power spectrum with Kaiser RSD based on the Planck 2018 flat LCDM cosmology.
-    """
-    from cosmoprimo.fiducial import DESI
-
-    # Use a basic linear P(k) with RSD multipoles for the fiducial cosmology
-    cosmo = DESI(engine="eisenstein_hu")
-    pk = cosmo.get_fourier().pk_interpolator().to_1d(z=1.0)
-
-    edgesin = np.column_stack([edgesin[:-1], edgesin[1:]])
-
-    kin = np.mean(edgesin, axis=-1)
-    pkin = pk(kin)
-    ells = (0, 2, 4)
-
-    f, b = 0.8, 1.5
-    pkb = b**2 * pkin
-    beta = f / b
-    poles = [(1.0 + 2.0 / 3.0 * beta + 1.0 / 5.0 * beta**2) * pkb, 0.9 * (4.0 / 3.0 * beta + 4.0 / 7.0 * beta**2) * pkb, 8.0 / 35 * beta**2 * pkb]
-    poles = np.array(poles)
-
-    theory = ObservableTree([ObservableLeaf(k=kin, k_edges=edgesin, value=pole, coords=["k"]) for pole in poles], ells=ells)
-    return theory
+#: :py:func:`fiducial_theory` for the Planck 2018 flat LCDM cosmology.
+fiducial_planck_2018 = partial(fiducial_theory, cosmo="Planck2018FullFlatLCDM")
+#: :py:func:`fiducial_theory` for the DESI fiducial cosmology.
+fiducial_DESI = partial(fiducial_theory, cosmo="DESI")
 
 
 # Linear local-PNG + Kaiser basis vectors, see get_png_basis_vectors
