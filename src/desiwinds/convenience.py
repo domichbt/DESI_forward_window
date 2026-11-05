@@ -144,35 +144,20 @@ def get_png_basis_vectors(
     r"""
     Basis vectors of the linear local-PNG + Kaiser model at redshift ``z`` (by default 0), on the bins of ``theory``.
 
-    For a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` with the local line of sight (``theory.ells`` the pairs :py:data:`LOCAL_PAIRS`,
-    see :py:func:`fiducial_theory`), the vectors are on the pairs: :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_\mathrm{lin}`
-    with :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3` and :math:`\beta_2 = 2 f / 3` per tracer, hence the 8 vectors of
-    :py:data:`PNG_KAISER_PAIR_BASIS_NAMES` (coefficients :py:func:`get_png_kaiser_pair_coefficients`), or the 12 responses of
-    :py:data:`PNG_ALL_PAIR_BASIS_NAMES` with ``responses="all"``.
+    For a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` with the local line of sight (``theory.ells`` the pairs :py:data:`LOCAL_PAIRS`, see :py:func:`fiducial_theory`), the vectors are on the pairs: :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_\mathrm{lin}` with :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3` and :math:`\beta_2 = 2 f / 3` per tracer, hence the 8 vectors of :py:data:`PNG_KAISER_PAIR_BASIS_NAMES` (coefficients :py:func:`get_png_kaiser_pair_coefficients`), or the 12 responses of :py:data:`PNG_ALL_PAIR_BASIS_NAMES` with ``responses="all"``.
 
-    The model is :math:`P(k, \mu) = (b_1 + b_\phi f_\mathrm{NL}\, g(k) + f \mu^2)^2 P_\mathrm{lin}(k)`, with
-    :math:`g(k, z) = \sqrt{P_\phi(k) / P_{dd}(k, z)}` and :math:`P_\phi = \frac{9}{25} \frac{2 \pi^2}{k^3} P_\mathrm{prim}(k) / h^3`
-    (the ``'prim'`` method of desilike's PNG theory). As :math:`P_{dd}(k, z) \simeq r(z)^2 P_0(k)` and :math:`g(k, z) \simeq g_0(k) / r(z)`,
-    with :math:`r` from :py:func:`get_growth_ratio`, the shapes :math:`P_0`, :math:`g_0 P_0` and :math:`g_0^2 P_0` at ``z = 0`` give
-    a window that does not depend on redshift, the powers of :math:`r(z_\mathrm{eff})` going into the coefficients (see
-    :py:func:`get_png_kaiser_coefficients`). This is exact up to the scale dependence of the growth of ``delta_cb`` from massive
-    neutrinos: with 0.06 eV, :math:`P_{dd}(k, z) / (r^2 P_0)` departs from 1 by up to 0.2% (z = 0.8), 0.4% (z = 1.5) and
-    0.6% (z = 2.5) over :math:`0.01 < k < 0.16\ h/\mathrm{Mpc}`. Shapes at ``z = z_eff`` with ``growth_ratio = 1`` are exact.
+    The model is :math:`P(k, \mu) = (b_1 + b_\phi f_\mathrm{NL}\, g(k) + f \mu^2)^2 P_\mathrm{lin}(k)`, with :math:`g(k, z) = \sqrt{P_\phi(k) / P_{dd}(k, z)}` and :math:`P_\phi = \frac{9}{25} \frac{2 \pi^2}{k^3} P_\mathrm{prim}(k) / h^3` (the ``'prim'`` method of desilike's PNG theory). As :math:`P_{dd}(k, z) \simeq r(z)^2 P_0(k)` and :math:`g(k, z) \simeq g_0(k) / r(z)`, with :math:`r` from :py:func:`get_growth_ratio`, the shapes :math:`P_0`, :math:`g_0 P_0` and :math:`g_0^2 P_0` at ``z = 0`` give a window that does not depend on redshift, the powers of :math:`r(z_\mathrm{eff})` going into the coefficients (see :py:func:`get_png_kaiser_coefficients`). This is exact up to the scale dependence of the growth of ``delta_cb`` from massive neutrinos: with 0.06 eV, :math:`P_{dd}(k, z) / (r^2 P_0)` departs from 1 by up to 0.2% (z = 0.8), 0.4% (z = 1.5) and 0.6% (z = 2.5) over :math:`0.01 < k < 0.16\ h/\mathrm{Mpc}`. Shapes at ``z = z_eff`` with ``growth_ratio = 1`` are exact.
 
     Parameters
     ----------
     theory : ObservableTree
-        Fiducial theory of the window (*e.g.* the input of :py:func:`desiwinds.window.get_window_basis`), whose bins (the same
-        for all multipoles, which must include 0, 2 and 4, or be the pairs :py:data:`LOCAL_PAIRS`) define the vectors.
+        Fiducial theory of the window (*e.g.* the input of :py:func:`desiwinds.window.get_window_basis`), whose bins (the same for all multipoles, which must include 0, 2 and 4, or be the pairs :py:data:`LOCAL_PAIRS`) define the vectors.
     cosmology : cosmoprimo.Cosmology, optional
-        Cosmology of :math:`P_0`, :math:`P_\mathrm{prim}` and :math:`h`; use the same as the likelihood. By default
-        ``cosmoprimo.fiducial.DESI(engine="camb")``.
+        Cosmology of :math:`P_0`, :math:`P_\mathrm{prim}` and :math:`h`; use the same as the likelihood. By default ``cosmoprimo.fiducial.DESI(engine="camb")``.
     responses : Literal["kaiser", "all"], optional
-        ``"kaiser"``: the 6 vectors of the Kaiser model (:py:data:`PNG_KAISER_BASIS_NAMES`); ``"all"``: the 9 responses
-        :math:`\{P_0, g_0 P_0, g_0^2 P_0\} \times \{\ell = 0, 2, 4\}` (:py:data:`PNG_ALL_BASIS_NAMES`), for any model linear in them.
+        ``"kaiser"``: the 6 vectors of the Kaiser model (:py:data:`PNG_KAISER_BASIS_NAMES`); ``"all"``: the 9 responses :math:`\{P_0, g_0 P_0, g_0^2 P_0\} \times \{\ell = 0, 2, 4\}` (:py:data:`PNG_ALL_BASIS_NAMES`), for any model linear in them.
     k_average : Literal["modes", "center"], optional
-        Value of each vector in a theory bin, which the Gaussian mocks paint as a constant: ``"modes"``, the average over the bin
-        weighted by :math:`k^2` (the density of Fourier modes); ``"center"``, the value at the bin center. By default ``"modes"``.
+        Value of each vector in a theory bin, which the Gaussian mocks paint as a constant: ``"modes"``, the average over the bin weighted by :math:`k^2` (the density of Fourier modes); ``"center"``, the value at the bin center. By default ``"modes"``.
     z : float, optional
         Redshift of the shapes :math:`P_{dd}(k, z)` and :math:`g(k, z)`. By default 0.
 
@@ -183,8 +168,7 @@ def get_png_basis_vectors(
 
     Notes
     -----
-    In bins starting at :math:`k = 0` (with the usual edges, the bin of the :math:`k = 0` mode only, which the integral constraints
-    remove), the :math:`g_0 P_0` and :math:`g_0^2 P_0` shapes, which diverge at :math:`k \to 0`, are set to 0.
+    In bins starting at :math:`k = 0` (with the usual edges, the bin of the :math:`k = 0` mode only, which the integral constraints remove), the :math:`g_0 P_0` and :math:`g_0^2 P_0` shapes, which diverge at :math:`k \to 0`, are set to 0.
     """
     from .window import _common_k_bins
 
@@ -234,8 +218,7 @@ def get_png_kaiser_coefficients(b1, bphi_fnl, f, growth_ratio):
     r"""
     Coefficients of the ``"kaiser"`` basis vectors of :py:func:`get_png_basis_vectors`, in the same order.
 
-    The prediction at the effective redshift :math:`z_\mathrm{eff}` is ``window.value() @ coefficients``, with the window computed
-    on these vectors.
+    The prediction at the effective redshift :math:`z_\mathrm{eff}` is ``window.value() @ coefficients``, with the window computed on these vectors.
 
     Parameters
     ----------
@@ -268,9 +251,7 @@ def get_png_kaiser_pair_coefficients(b1, bphi_fnl, f, growth_ratio):
     r"""
     Coefficients of the ``"kaiser"`` pair basis vectors of :py:func:`get_png_basis_vectors` (:py:data:`PNG_KAISER_PAIR_BASIS_NAMES`), in the same order.
 
-    For the cross-spectrum of tracers :math:`X` and :math:`Y`, :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_{dd}` with
-    :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3`, :math:`\beta_2 = 2 f / 3`; in terms of the basis shapes, with
-    :math:`c = r b_1`, :math:`e = r f`, :math:`B = b_\phi f_\mathrm{NL}`: :math:`\beta_0 \sqrt{P_{dd}} = (c + B g_0 + e / 3) \sqrt{P_0}`.
+    For the cross-spectrum of tracers :math:`X` and :math:`Y`, :math:`A_{\ell_1 \ell_2} = \beta^X_{\ell_1} \beta^Y_{\ell_2} P_{dd}` with :math:`\beta_0 = b_1 + b_\phi f_\mathrm{NL}\, g + f / 3`, :math:`\beta_2 = 2 f / 3`; in terms of the basis shapes, with :math:`c = r b_1`, :math:`e = r f`, :math:`B = b_\phi f_\mathrm{NL}`: :math:`\beta_0 \sqrt{P_{dd}} = (c + B g_0 + e / 3) \sqrt{P_0}`.
 
     Parameters
     ----------

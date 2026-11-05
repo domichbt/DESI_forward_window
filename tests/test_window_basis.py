@@ -1,8 +1,7 @@
 """
 Tests for :py:func:`desiwinds.window.get_window_basis`, the shot-noise Jacobians and :py:mod:`desiwinds.post`.
 
-A small synthetic survey (uniform randoms in a ball, split 50/50 into data and randoms, global integral constraint) on a ~30^3 mesh,
-so that everything runs on CPU in a few tens of seconds.
+A small synthetic survey (uniform randoms in a ball, split 50/50 into data and randoms, global integral constraint) on a ~30^3 mesh, so that everything runs on CPU in a few tens of seconds.
 """
 
 import jax

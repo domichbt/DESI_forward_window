@@ -1,10 +1,8 @@
 """
 Shot-noise Jacobians with OQE-like estimator weights: one spectrum per multipole, crossing the same particles with two weights.
 
-As in the OQE windows of the validation scripts, the ell = 0 spectrum crosses ``w_tilde x w_0`` and the ell = 2 one
-``w_tilde x w_2``, each on its own (binner with a single multipole), with ``fields=(0, 0)`` since both legs are the same particles.
-The data-only shot noise of the self-pair correction is taken from the ell = 0 run; the ell = 2 run must still run, and its
-estimated shot noise is zero (jaxpower assigns shot noise to the monopole only).
+As in the OQE windows of the validation scripts, the ell = 0 spectrum crosses ``w_tilde x w_0`` and the ell = 2 one ``w_tilde x w_2``, each on its own (binner with a single multipole), with ``fields=(0, 0)`` since both legs are the same particles.
+The data-only shot noise of the self-pair correction is taken from the ell = 0 run; the ell = 2 run must still run, and its estimated shot noise is zero (jaxpower assigns shot noise to the monopole only).
 """
 
 import jax

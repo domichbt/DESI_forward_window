@@ -1,8 +1,7 @@
 r"""
 Basis windows of cross-spectra with the local line of sight and a theory :math:`A_{\ell_1 \ell_2}` (pairs of multipoles, :math:`A_{02} \neq A_{20}`).
 
-Two tracers in overlapping balls on a ~30^3 mesh, as in ``test_window_basis.py``; requires a jaxpower whose ``generate_anisotropic_gaussian_mesh``
-accepts pairs ``(ell1, ell2)``.
+Two tracers in overlapping balls on a ~30^3 mesh, as in ``test_window_basis.py``; requires a jaxpower whose ``generate_anisotropic_gaussian_mesh`` accepts pairs ``(ell1, ell2)``.
 """
 
 import jax

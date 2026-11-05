@@ -1,16 +1,12 @@
 """
 Post-processing of window realizations: averaging, removal of the self-pair noise of the mock data, control variate.
 
-The windows of :py:mod:`desiwinds.window` are derivatives of forward modelled spectra. The mock data being randoms weighted by
-``1 + delta`` (:py:func:`desiwinds.forward.mock_survey_catalog`), their self-pairs carry a white noise proportional to the
-variance of ``delta``, hence linear in the input theory: it goes through the integral constraints like the Poisson shot noise
-and ends up in the window, while Poisson-sampled data have no such term. :py:func:`correct_selfpairs` removes it.
+The windows of :py:mod:`desiwinds.window` are derivatives of forward modelled spectra. The mock data being randoms weighted by ``1 + delta`` (:py:func:`desiwinds.forward.mock_survey_catalog`), their self-pairs carry a white noise proportional to the variance of ``delta``, hence linear in the input theory: it goes through the integral constraints like the Poisson shot noise and ends up in the window, while Poisson-sampled data have no such term. :py:func:`correct_selfpairs` removes it.
 
 Per window run, the order is:
 
 1. :py:func:`average_windows` over the realizations (windows and, if computed, shot-noise Jacobians);
-2. :py:func:`correct_selfpairs` (or :py:func:`correct_selfpairs_analytic` without the Jacobians) on every forward modelled
-   window, including the geometry one used in the control variate;
+2. :py:func:`correct_selfpairs` (or :py:func:`correct_selfpairs_analytic` without the Jacobians) on every forward modelled window, including the geometry one used in the control variate;
 3. :py:func:`apply_control_variate` with the analytic geometry window, which has no self-pairs.
 """
 
@@ -33,8 +29,7 @@ def correct_selfpairs(
     """
     Remove the self-pair noise of the mock data from ``window``, with the shot-noise Jacobians of the same run.
 
-    The window should be the derivative of a noise-free spectrum. With ``R`` the raw power (before shot-noise subtraction), the
-    corrected window is the derivative of ``R - data_shotnoise * whitenoise_template``::
+    The window should be the derivative of a noise-free spectrum. With ``R`` the raw power (before shot-noise subtraction), the corrected window is the derivative of ``R - data_shotnoise * whitenoise_template``::
 
         window + shotnoise_jacobian - outer(whitenoise_template, data_shotnoise_jacobian)
 
@@ -47,9 +42,7 @@ def correct_selfpairs(
     data_shotnoise_jacobian : WindowMatrix
         Derivative of the data-only monopole shot noise of the same run, one row by the window columns.
     whitenoise_template : Mesh2SpectrumPoles
-        Response of the estimator and the observational effects to white noise on the data, normalized by its monopole shot
-        noise: ``(P_ell + num_shotnoise_ell / norm_ell) / (num_shotnoise_0 / norm_0)`` of white-noise forward models
-        (:py:func:`desiwinds.forward.mock_whitenoise`) with the same mesh, painting, binning, weights and effects as the window.
+        Response of the estimator and the observational effects to white noise on the data, normalized by its monopole shot noise: ``(P_ell + num_shotnoise_ell / norm_ell) / (num_shotnoise_0 / norm_0)`` of white-noise forward models (:py:func:`desiwinds.forward.mock_whitenoise`) with the same mesh, painting, binning, weights and effects as the window.
         Must be on the binning of the window observable.
 
     Returns
@@ -72,15 +65,11 @@ def correct_selfpairs_analytic(
     """
     Remove the self-pair noise of the mock data from ``window``, for windows computed without the shot-noise Jacobians.
 
-    The self-pair noise is ``unclustered_data_shotnoise * variance``, with ``variance`` the variance of ``delta`` read at the
-    particles (compensated CIC, as in :py:func:`desiwinds.forward.mock_survey_catalog`), which only depends on the input
-    monopole. Its derivative with respect to each theory entry is :py:func:`get_density_variance_derivative`, and the
-    correction removes its response through the estimator and the effects::
+    The self-pair noise is ``unclustered_data_shotnoise * variance``, with ``variance`` the variance of ``delta`` read at the particles (compensated CIC, as in :py:func:`desiwinds.forward.mock_survey_catalog`), which only depends on the input monopole. Its derivative with respect to each theory entry is :py:func:`get_density_variance_derivative`, and the correction removes its response through the estimator and the effects::
 
         window - outer(whitenoise_template - delta_ell0, unclustered_data_shotnoise * variance_derivative)
 
-    This neglects the dependence of the randoms' shot noise on the theory, and assumes the estimated shot noise is a monopole
-    (unit or FKP estimator weights); :py:func:`correct_selfpairs` makes neither approximation.
+    This neglects the dependence of the randoms' shot noise on the theory, and assumes the estimated shot noise is a monopole (unit or FKP estimator weights); :py:func:`correct_selfpairs` makes neither approximation.
 
     Parameters
     ----------
@@ -89,8 +78,7 @@ def correct_selfpairs_analytic(
     whitenoise_template : Mesh2SpectrumPoles
         See :py:func:`correct_selfpairs`.
     unclustered_data_shotnoise : float
-        Data-only monopole shot noise of the mock data before clustering (``1 + delta`` weights), *i.e.* the sum of the squared
-        data weights over the monopole normalization.
+        Data-only monopole shot noise of the mock data before clustering (``1 + delta`` weights), *i.e.* the sum of the squared data weights over the monopole normalization.
     mattrs : MeshAttrs
         Attributes of the mesh on which the Gaussian mocks are generated.
 
@@ -112,11 +100,7 @@ def get_density_variance_derivative(theory: Mesh2SpectrumPoles, mattrs: MeshAttr
     r"""
     Return the derivative of the variance of the Gaussian mock density read at the particles with respect to each entry of ``theory``.
 
-    The mocks paint the theory multipoles on the modes of the mesh ``mattrs`` as top-hat bins (lower edges of the bins, plus the
-    last upper edge), and the density is read with a compensated CIC, whose variance boost for a mode is
-    ``prod_a (1 - 2/3 sin^2(k_a H_a / 2)) / sinc^4(k_a H_a / 2)``. Only the monopole contributes, so the entries of the other
-    multipoles are zero. Not defined for a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` (pairs of multipoles), which does not
-    fix the auto power of each field; the cross-spectrum of two tracers has no self-pairs anyway.
+    The mocks paint the theory multipoles on the modes of the mesh ``mattrs`` as top-hat bins (lower edges of the bins, plus the last upper edge), and the density is read with a compensated CIC, whose variance boost for a mode is ``prod_a (1 - 2/3 sin^2(k_a H_a / 2)) / sinc^4(k_a H_a / 2)``. Only the monopole contributes, so the entries of the other multipoles are zero. Not defined for a cross-spectrum theory :math:`A_{\ell_1 \ell_2}` (pairs of multipoles), which does not fix the auto power of each field; the cross-spectrum of two tracers has no self-pairs anyway.
 
     Returns
     -------
@@ -163,8 +147,7 @@ def apply_control_variate(
     """
     Control variate of a forward modelled window with the analytic geometry window.
 
-    The forward modelled windows with the effects (``effect_window``) and with the geometry only (``geometry_window``, no
-    integral constraint) share their realizations, so most of their noise cancels in the difference::
+    The forward modelled windows with the effects (``effect_window``) and with the geometry only (``geometry_window``, no integral constraint) share their realizations, so most of their noise cancels in the difference::
 
         analytic_geometry_window + (effect_window - geometry_window)
 
@@ -175,12 +158,9 @@ def apply_control_variate(
     effect_window, geometry_window : WindowMatrix
         Forward modelled windows, with the same theory.
     analytic_geometry_window : WindowMatrix
-        Window from :py:func:`desiwinds.window.get_window_geometry`; for basis windows, projected onto the same basis vectors
-        with :py:func:`desiwinds.window.project_window`.
+        Window from :py:func:`desiwinds.window.get_window_geometry`; for basis windows, projected onto the same basis vectors with :py:func:`desiwinds.window.project_window`.
     theory_interpolation : str, optional
-        How the difference is mapped onto the theory of ``analytic_geometry_window`` when the theory bins differ: ``"spline"``
-        (cubic spline interpolation in k, the theory bins being sampled at their centers) or ``"exact"`` (raise unless the
-        theories match). Basis windows must have the same basis vectors. By default ``"spline"``.
+        How the difference is mapped onto the theory of ``analytic_geometry_window`` when the theory bins differ: ``"spline"`` (cubic spline interpolation in k, the theory bins being sampled at their centers) or ``"exact"`` (raise unless the theories match). Basis windows must have the same basis vectors. By default ``"spline"``.
 
     Returns
     -------

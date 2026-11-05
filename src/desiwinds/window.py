@@ -114,17 +114,14 @@ def get_window_spikes(
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
     survey_names: list[str] | None
         Name of the subdirectory for the power spectra output by ``mock_survey``.
-    return_shotnoise_jacobians: bool, optional
-        If ``True``, also estimate the Jacobians of the shot noise, needed to remove the self-pair noise of the mock data from the
-        window (see :py:func:`desiwinds.post.correct_selfpairs`). ``mock_survey`` must then accept ``return_data_shotnoise=True``,
-        as :py:func:`desiwinds.forward.mock_survey_catalog`. By default ``False``.
+    return_shotnoise_jacobians : bool, optional
+        If ``True``, also estimate the Jacobians of the shot noise, needed to remove the self-pair noise of the mock data from the window (see :py:func:`desiwinds.post.correct_selfpairs`). ``mock_survey`` must then accept ``return_data_shotnoise=True``, as :py:func:`desiwinds.forward.mock_survey_catalog`. By default ``False``.
 
     Returns
     -------
     tuple[list[lsstypes.WindowMatrix], list[list[lsstypes.WindowMatrix]]]
         The average window matrices over ``nreal`` realizations and the individual realizations.
-        If ``return_shotnoise_jacobians``, both are dictionaries with keys ``"window"``, ``"shotnoise_jacobian"`` and
-        ``"data_shotnoise_jacobian"``, each holding such a list (see :py:func:`get_window_basis`).
+        If ``return_shotnoise_jacobians``, both are dictionaries with keys ``"window"``, ``"shotnoise_jacobian"`` and ``"data_shotnoise_jacobian"``, each holding such a list (see :py:func:`get_window_basis`).
 
     Notes
     -----
@@ -196,7 +193,7 @@ def get_windows_spikes(
         Directory where individual realizations can be saved as soon as they are computed, to avoid losing them to a timeout. Files will be overwritten and the default name is ``f"{seed:010d}.h5"``.
     survey_names: list[str] | None
         Name of the subdirectories for each survey of ``mock_surveys``.
-    return_shotnoise_jacobians: bool, optional
+    return_shotnoise_jacobians : bool, optional
         If ``True``, also estimate the Jacobians of the shot noise, see :py:func:`get_window_spikes`. By default ``False``.
 
     Returns
@@ -245,21 +242,16 @@ def get_window_basis(
     """
     Estimate the response of the observation forward modelling ``mock_survey`` to the theory directions ``basis_vectors``, at the fiducial ``theory``.
 
-    Same as :py:func:`get_window_spikes`, but each window column is the derivative of the observed power spectrum along one basis
-    vector (a power spectrum shape, with any support) instead of along one theory bin. The derivative being linear in the
-    direction, a column equals, realization by realization, the spike window times the basis vector; the cost scales with the
-    number of basis vectors instead of the number of theory bins.
+    Same as :py:func:`get_window_spikes`, but each window column is the derivative of the observed power spectrum along one basis vector (a power spectrum shape, with any support) instead of along one theory bin. The derivative being linear in the direction, a column equals, realization by realization, the spike window times the basis vector; the cost scales with the number of basis vectors instead of the number of theory bins.
 
     Parameters
     ----------
     mock_survey : Callable
         Selection to be forward modeled on ``theory``, see :py:func:`get_window_spikes`.
     theory : lsstypes.Mesh2SpectrumPoles
-        Fiducial theoretical power spectrum, at which the derivative is taken. All multipoles must share the same k bins, which
-        the Gaussian mocks paint as top-hat bins.
+        Fiducial theoretical power spectrum, at which the derivative is taken. All multipoles must share the same k bins, which the Gaussian mocks paint as top-hat bins.
     basis_vectors : np.ndarray
-        Basis vectors on the bins of ``theory``, of shape ``(n_vectors, n_theory)`` with the multipoles concatenated as in
-        ``theory.value()``, or ``(n_vectors, n_ells, n_k)``.
+        Basis vectors on the bins of ``theory``, of shape ``(n_vectors, n_theory)`` with the multipoles concatenated as in ``theory.value()``, or ``(n_vectors, n_ells, n_k)``.
     nreal, seeds, batch_size, mock_survey_args, mock_survey_kwargs, static_argnums, static_argnames, tmpdir, survey_names, return_shotnoise_jacobians
         See :py:func:`get_window_spikes`.
     basis_names : list[str] | None, optional
@@ -268,13 +260,11 @@ def get_window_basis(
     Returns
     -------
     tuple[list[lsstypes.WindowMatrix], list[list[lsstypes.WindowMatrix]]]
-        The average window matrices and the individual realizations, see :py:func:`get_window_spikes`. Their theory is
-        :py:func:`get_basis_theory`, which stores the basis vectors and the fiducial ``theory``.
+        The average window matrices and the individual realizations, see :py:func:`get_window_spikes`. Their theory is :py:func:`get_basis_theory`, which stores the basis vectors and the fiducial ``theory``.
         If ``return_shotnoise_jacobians``, dictionaries with keys:
 
         - ``"window"``: the windows;
-        - ``"shotnoise_jacobian"``: derivative of the estimated shot noise (``num_shotnoise`` divided by the normalization), with
-          the same observable and theory as the windows;
+        - ``"shotnoise_jacobian"``: derivative of the estimated shot noise (``num_shotnoise`` divided by the normalization), with the same observable and theory as the windows;
         - ``"data_shotnoise_jacobian"``: derivative of the data-only monopole shot noise, one row by the window columns.
     """
     theory = _real_theory(theory)
@@ -350,8 +340,7 @@ def get_fiducial_theory(theory: ObservableTree | Mesh2SpectrumPoles) -> Mesh2Spe
     """
     Fiducial theory at which a window was computed, from its ``theory``.
 
-    For spike windows (:py:func:`get_window_spikes`), the window theory is the fiducial itself. For basis windows
-    (:py:func:`get_window_basis`), it is rebuilt from the ``"basis"`` leaf.
+    For spike windows (:py:func:`get_window_spikes`), the window theory is the fiducial itself. For basis windows (:py:func:`get_window_basis`), it is rebuilt from the ``"basis"`` leaf.
     """
     if not hasattr(theory, "types"):
         return theory
@@ -369,8 +358,7 @@ def project_window(
     """
     Project a window computed on the bins of its theory (*e.g.* :py:func:`get_window_geometry`, or spikes) onto ``basis_vectors``.
 
-    The result has the theory :py:func:`get_basis_theory`, so that it can be combined with windows from
-    :py:func:`get_window_basis`, as in :py:func:`desiwinds.post.apply_control_variate`. ``names`` are stored with the vectors.
+    The result has the theory :py:func:`get_basis_theory`, so that it can be combined with windows from :py:func:`get_window_basis`, as in :py:func:`desiwinds.post.apply_control_variate`. ``names`` are stored with the vectors.
 
     Parameters
     ----------
@@ -381,10 +369,7 @@ def project_window(
     names : list[str] | None, optional
         Names of the basis vectors.
     basis_theory : Mesh2SpectrumPoles | None, optional
-        Theory on whose bins ``basis_vectors`` are given, *e.g.* the fiducial theory of a basis window
-        (:py:func:`get_fiducial_theory`), so that the projection has the same basis theory. Each of its bins must be a bin of
-        the window theory; the window columns of the other bins are dropped (the basis vectors are 0 there, as the Gaussian
-        mocks paint nothing outside the bins of their theory).
+        Theory on whose bins ``basis_vectors`` are given, *e.g.* the fiducial theory of a basis window (:py:func:`get_fiducial_theory`), so that the projection has the same basis theory. Each of its bins must be a bin of the window theory; the window columns of the other bins are dropped (the basis vectors are 0 there, as the Gaussian mocks paint nothing outside the bins of their theory).
     """
     if basis_theory is None:
         basis_theory, columns = window.theory, slice(None)
@@ -541,8 +526,7 @@ def get_windows_component(
     """
     By definition, the window is the derivative of the observed power spectrum relative to the input theory evaluated at some fiducial theory value.
 
-    With ``return_shotnoise_jacobians``, also return the derivatives of the estimated shot noise of each pole (``num_shotnoise``
-    divided by the normalization) and of the data-only monopole shot noise (``mock_surveys`` must accept ``return_data_shotnoise``).
+    With ``return_shotnoise_jacobians``, also return the derivatives of the estimated shot noise of each pole (``num_shotnoise`` divided by the normalization) and of the data-only monopole shot noise (``mock_surveys`` must accept ``return_data_shotnoise``).
     """
 
     # Get a mock-based observed P(k) from a theory power spectrum that looks like "input_theory" and concatenate the poles

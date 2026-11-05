@@ -940,9 +940,7 @@ def _get_data_shotnoise(*fkp_fields, fkp_norm, binner, fields=None):
     """
     Data-only shot noise: the self-pair sum of the data particles alone (with the pair weights of the spectrum), over the normalization.
 
-    With a monopole in ``binner``, this is its ``num_shotnoise`` over its normalization. Without (*e.g.* the ell = 2 spectrum of OQE
-    weights, computed on its own), jaxpower assigns no shot noise to the multipoles, so the self-pair sum is computed directly and
-    divided by the normalization of the first multipole.
+    With a monopole in ``binner``, this is its ``num_shotnoise`` over its normalization. Without (*e.g.* the ell = 2 spectrum of OQE weights, computed on its own), jaxpower assigns no shot noise to the multipoles, so the self-pair sum is computed directly and divided by the normalization of the first multipole.
     """
     data = [fkp_field.data for fkp_field in fkp_fields]
     ells = list(binner.ells)
@@ -1070,10 +1068,7 @@ def mock_survey_catalog(
         the cross term): without this, the analytic shot noise for that pair is silently 0, since jaxpower has no
         other way to know the two fields share positions.
     return_data_shotnoise : bool, optional
-        If ``True``, also return the data-only monopole shot noise of each output power spectrum (``num_shotnoise`` of the data
-        particles alone, with their final weights, divided by the monopole normalization). The mock data are randoms weighted by
-        ``1 + delta``, so their self-pairs carry a white noise that depends on the input theory; see
-        :py:func:`desiwinds.post.correct_selfpairs`. Must be static when jitting. Default is ``False``.
+        If ``True``, also return the data-only monopole shot noise of each output power spectrum (``num_shotnoise`` of the data particles alone, with their final weights, divided by the monopole normalization). The mock data are randoms weighted by ``1 + delta``, so their self-pairs carry a white noise that depends on the input theory; see :py:func:`desiwinds.post.correct_selfpairs`. Must be static when jitting. By default ``False``.
 
     Returns
     -------
