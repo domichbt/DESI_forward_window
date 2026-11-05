@@ -874,39 +874,43 @@ def _split_weights(data_weights, randoms_weights, fkp_fields, sharding_mesh):
     return data_weights, randoms_weights
 
 
-def _read_mesh_to_fkp(
-    fkp_field: FKPField | tuple[FKPField, ...],
-    mesh: RealMeshField,
-    resampler: str = "cic",
-    compensate: bool = True,
-) -> FKPField | tuple[FKPField, ...]:
-    if isinstance(fkp_field, tuple):
-        return tuple(_read_mesh_to_fkp(fkp_field=_fkp_field, mesh=mesh, resampler=resampler, compensate=compensate) for _fkp_field in fkp_field)
-    else:
-        data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler=resampler, compensate=compensate)))
-    return fkp_field.clone(data=data)
-
-
-def _read_data(
-    fkp_field: tuple[FKPField, ...],
+def _generate_meshes(
+    mattrs: MeshAttrs,
+    n_fields: int,
     theory: ObservableTree,
     seed: jax.Array,
     los: Literal["local", "x", "y", "z"],
     unitary_amplitude: bool,
-) -> tuple[FKPField, ...]:
-    meshes = generate_anisotropic_gaussian_mesh(
-        fkp_field[0].attrs,
-        poles=theory,
-        seed=seed,
-        los=los,
-        unitary_amplitude=unitary_amplitude,
-    )
-    # one mesh per field: a tuple of two meshes for a cross-correlation theory (ell1, ell2), else the same mesh
+) -> tuple[RealMeshField, ...]:
+    r"""
+    Generate one Gaussian mesh per field.
+
+    For plane-parallel multipoles ``ells = (0, 2, 4)``, a single mesh shared by all ``n_fields`` fields (auto-correlation, or cross-correlation with :math:`A_{02} = A_{20}`). For a theory :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, one mesh per tracer, which requires ``n_fields == 2``.
+    """
+    meshes = generate_anisotropic_gaussian_mesh(mattrs, poles=theory, seed=seed, los=los, unitary_amplitude=unitary_amplitude)
     if not isinstance(meshes, tuple):
-        meshes = (meshes,) * len(fkp_field)
-    fkp_field = tuple(_read_mesh_to_fkp(_fkp_field, mesh) for _fkp_field, mesh in zip(fkp_field, meshes, strict=True))
-    del meshes
-    return fkp_field
+        return (meshes,) * n_fields
+    if len(meshes) != n_fields:
+        raise ValueError(
+            f"A cross-correlation theory with ells (ell1, ell2) gives one mesh per tracer ({len(meshes)} meshes), but {n_fields} FKP field(s) were provided per "
+            f"output spectrum; pass tuples of {len(meshes)} FKP fields, or plane-parallel multipoles ells = (0, 2, 4) for an auto-correlation."
+        )
+    return meshes
+
+
+def _read_mesh_to_fkp(
+    fkp_field: FKPField,
+    mesh: RealMeshField,
+    resampler: str = "cic",
+    compensate: bool = True,
+) -> FKPField:
+    data = fkp_field.data.clone(weights=fkp_field.data.weights * (1 + mesh.read(fkp_field.data.positions, resampler=resampler, compensate=compensate)))
+    return fkp_field.clone(data=data)
+
+
+def _read_meshes_to_fkp(fkp_fields: tuple[FKPField, ...], meshes: tuple[RealMeshField, ...]) -> tuple[FKPField, ...]:
+    """Modulate the data weights of each field of ``fkp_fields`` by the mesh with the same index in ``meshes``."""
+    return tuple(_read_mesh_to_fkp(fkp_field, mesh) for fkp_field, mesh in zip(fkp_fields, meshes, strict=True))
 
 
 def _get_pk(*fkp_fields, fkp_norm, binner, los, fields=None):
@@ -1010,9 +1014,7 @@ def mock_survey_catalog(
     *fkp_fields : FKPField | tuple[FKPField, FKPField]
         FKP fields containing data and randoms information. The data shouldn't be clustered (*i.e.* the "data" should also be randoms), but the FKP field serves to designate data and randoms amongst the original randoms. One field per desired output power spectrum. Example: NGC and SGC can be provided as two separate FKP fields, to get two output spectra. Pass several **tuples** of FKP fields to compute cross-spectra, for example (LRG_NGC, ELG_NGC) and (LRG_SGC, ELG_SGC) to get the LRGxELG cross-spectra in NGC and SGC.
     theory : ObservableTree
-        Fiducial theoretical power spectrum for the mock survey: plane-parallel multipoles ``ells = (0, 2, 4)``, or, for cross-spectra with ``los = "local"``,
-        :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, which also specifies :math:`A_{02} \neq A_{20}`;
-        see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
+        Fiducial theoretical power spectrum for the mock survey: plane-parallel multipoles ``ells = (0, 2, 4)``, or, for cross-spectra with ``los = "local"``, :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``, which also specifies :math:`A_{02} \neq A_{20}`; see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     seed : jax.Array
         Random seed for the mock survey mesh generation.
     los : Literal["local", "x", "y", "z"]
@@ -1140,21 +1142,15 @@ def mock_survey_catalog(
 
     sharding_mesh = get_sharding_mesh()
     if meshattrs is None:
+        # one key per output spectrum, shared by the fields of its tuple: they are read from the same mesh (or, for a theory (ell1, ell2), the same pair of meshes)
         keys = jax.random.split(seed, len(fkp_fields))
-        fkp_fields = tuple(_read_data(fkp_field, theory, key, los, unitary_amplitude) for fkp_field, key in zip(fkp_fields, keys, strict=True))
-        # fkp_field can be a tuple, but the same key will be used for all fields in the tuple, which is what we want since they should be read from the same mesh
-        # (or, for a theory (ell1, ell2), from the same pair of meshes)
-    else:
-        meshes = generate_anisotropic_gaussian_mesh(
-            meshattrs,
-            poles=theory,
-            seed=seed,
-            los=los,
-            unitary_amplitude=unitary_amplitude,
+        fkp_fields = tuple(
+            _read_meshes_to_fkp(fkp_field, _generate_meshes(fkp_field[0].attrs, len(fkp_field), theory, key, los, unitary_amplitude))
+            for fkp_field, key in zip(fkp_fields, keys, strict=True)
         )
-        if not isinstance(meshes, tuple):
-            meshes = (meshes,) * len(fkp_fields[0])
-        fkp_fields = tuple(tuple(_read_mesh_to_fkp(_fkp_field, mesh) for _fkp_field, mesh in zip(fkp_field, meshes, strict=True)) for fkp_field in fkp_fields)
+    else:
+        meshes = _generate_meshes(meshattrs, len(fkp_fields[0]), theory, seed, los, unitary_amplitude)
+        fkp_fields = tuple(_read_meshes_to_fkp(fkp_field, meshes) for fkp_field in fkp_fields)
         del meshes
 
     # Length of list = 1 or 2 dependent on whether we are doing auto or cross spectra
@@ -1426,8 +1422,7 @@ def mock_survey_mesh(
     Parameters
     ----------
     theory : ObservableTree
-        Theory power spectrum to "observe": plane-parallel multipoles ``ells = (0, 2, 4)``, or, for the cross-correlation of the two selections
-        with ``los = "local"``, :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``; see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
+        Theory power spectrum to "observe": plane-parallel multipoles ``ells = (0, 2, 4)``, or, for the cross-correlation of the two selections with ``los = "local"``, :math:`A_{\ell_1 \ell_2}` with ``ells = [(0, 0), (0, 2), (2, 0), (2, 2)]``; see :py:func:`jaxpower.generate_anisotropic_gaussian_mesh`.
     seed : jnp.ndarray
         Jax random key for the mesh generation.
     los : Literal["local", "x", "y", "z"]
@@ -1463,16 +1458,8 @@ def mock_survey_mesh(
     ric_regions = ric_regions or [jnp.ones_like(selection1, dtype=bool)]
     # Generate a gaussian mesh mock with exact required theory P(k)
     mattrs = selection1.attrs
-    _mesh = generate_anisotropic_gaussian_mesh(
-        mattrs,
-        poles=theory,
-        seed=seed,
-        los=los,
-        unitary_amplitude=unitary_amplitude,
-    )
-    # a cross-correlation theory (ell1, ell2) gives one mesh per selection
-    _mesh1, _mesh2 = _mesh if isinstance(_mesh, tuple) else (_mesh, _mesh)
-    del _mesh
+    # a cross-correlation theory (ell1, ell2) gives one mesh per selection, else the same mesh twice
+    _mesh1, _mesh2 = _generate_meshes(mattrs, 2, theory, seed, los, unitary_amplitude)
     mesh1 = _mesh1 * selection1
     mesh2 = _mesh2 * selection2
     del _mesh1, _mesh2
