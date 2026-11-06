@@ -1057,7 +1057,7 @@ def mock_survey_catalog(
     randoms_regions : jax.Array | tuple[jax.Array, jax.Array] | None, optional
         Regions for the data to randoms renormalization. By default None. These can typically be provided as the ``randoms_regions`` attribute in ``ric_args``, ``amr_args`` or ``nam_args``.
     meshattrs: MeshAttrs | None = None,
-        If not None, one mock mesh will be generated with these attributes instead of one mock mesh per FKP field with the FKP field's attributes. This mesh should cover all particles in all FKP fields. Default is None.
+        If not None, one mock mesh will be generated with these attributes instead of one mock mesh per FKP field with the FKP field's attributes. This mesh should cover all particles in all FKP fields. Single device only: the particles are distributed for their FKP field's own mesh and are not exchanged when reading this one. Default is None.
     fields : tuple[int, int] | None, optional
         Forwarded to :func:`jaxpower.compute_fkp2_shotnoise` for each cross-correlation pair passed in ``fkp_fields``.
         By default ``None``, i.e. jaxpower's default field-identifier inference, which treats the two elements of a
@@ -1170,6 +1170,10 @@ def mock_survey_catalog(
             for fkp_field, key in zip(fkp_fields, keys, strict=True)
         )
     else:
+        # The particles are distributed for each FKP field's own mesh, and jaxpower's particle exchange does not run under jit:
+        # on several devices, reading this other mesh would give the particles the wrong slab (silently wrong spectra).
+        if len(sharding_mesh.devices.flat) > 1:
+            raise NotImplementedError("mock_survey_catalog(meshattrs=...) reads a mesh not matching the FKP fields' sharding. Must be run on a single device.")
         meshes = _generate_meshes(meshattrs, len(fkp_fields[0]), theory, seed, los, unitary_amplitude)
         fkp_fields = tuple(_read_meshes_to_fkp(fkp_field, meshes) for fkp_field in fkp_fields)
         del meshes
